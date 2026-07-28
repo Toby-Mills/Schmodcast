@@ -22,22 +22,30 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
-import com.schmodcast.data.SubscriptionsRepository
 import com.schmodcast.data.model.Podcast
+import com.schmodcast.subscriptionsRepository
+import kotlinx.coroutines.launch
 
 @Composable
 fun SearchScreen(viewModel: SearchViewModel = viewModel()) {
+    val context = LocalContext.current
+    val repository = remember(context) { context.subscriptionsRepository() }
+    val scope = rememberCoroutineScope()
+
     val query by viewModel.query.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val subscriptions by SubscriptionsRepository.subscriptions.collectAsStateWithLifecycle()
+    val subscriptions by repository.subscriptions.collectAsStateWithLifecycle(initialValue = emptyList())
     val subscribedIds = subscriptions.mapTo(HashSet()) { it.id }
 
     Column(
@@ -85,7 +93,9 @@ fun SearchScreen(viewModel: SearchViewModel = viewModel()) {
                                 PodcastResultRow(
                                     podcast = podcast,
                                     isSubscribed = podcast.id in subscribedIds,
-                                    onToggleSubscribe = { SubscriptionsRepository.toggleSubscription(podcast) },
+                                    onToggleSubscribe = {
+                                        scope.launch { repository.toggleSubscription(podcast) }
+                                    },
                                 )
                             }
                         }

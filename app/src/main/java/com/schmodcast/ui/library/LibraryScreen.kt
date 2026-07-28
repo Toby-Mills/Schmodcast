@@ -15,19 +15,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
-import com.schmodcast.data.SubscriptionsRepository
 import com.schmodcast.data.model.Podcast
+import com.schmodcast.subscriptionsRepository
 
 @Composable
 fun LibraryScreen() {
-    val subscriptions by SubscriptionsRepository.subscriptions.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val repository = remember(context) { context.subscriptionsRepository() }
+    val subscriptions by repository.subscriptions.collectAsStateWithLifecycle(initialValue = emptyList())
 
     if (subscriptions.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

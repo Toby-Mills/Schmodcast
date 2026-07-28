@@ -1,23 +1,21 @@
 package com.schmodcast.data
 
+import com.schmodcast.data.local.PodcastDao
+import com.schmodcast.data.local.toDomain
+import com.schmodcast.data.local.toEntity
 import com.schmodcast.data.model.Podcast
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
-// Process-scoped only - no persistence yet, so subscriptions are lost on app restart.
-object SubscriptionsRepository {
-    private val _subscriptions = MutableStateFlow<List<Podcast>>(emptyList())
-    val subscriptions: StateFlow<List<Podcast>> = _subscriptions.asStateFlow()
+class SubscriptionsRepository(private val podcastDao: PodcastDao) {
+    val subscriptions: Flow<List<Podcast>> =
+        podcastDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
-    fun toggleSubscription(podcast: Podcast) {
-        _subscriptions.update { current ->
-            if (current.any { it.id == podcast.id }) {
-                current.filterNot { it.id == podcast.id }
-            } else {
-                current + podcast
-            }
+    suspend fun toggleSubscription(podcast: Podcast) {
+        if (podcastDao.isSubscribed(podcast.id)) {
+            podcastDao.deleteById(podcast.id)
+        } else {
+            podcastDao.insert(podcast.toEntity())
         }
     }
 }
