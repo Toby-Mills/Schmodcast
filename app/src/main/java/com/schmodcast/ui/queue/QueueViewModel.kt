@@ -2,6 +2,7 @@ package com.schmodcast.ui.queue
 
 import android.app.Application
 import android.content.ComponentName
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
@@ -59,8 +60,10 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch {
             val podcasts = subscriptionsRepository.subscriptions.first()
+            Log.d("QueueViewModel", "Refreshing ${podcasts.size} subscription(s): ${podcasts.map { it.title }}")
             episodeRepository.refreshAll(podcasts)
             episodeRepository.pruneOldEpisodes()
+            Log.d("QueueViewModel", "Refresh pass complete")
         }
         connectController()
     }

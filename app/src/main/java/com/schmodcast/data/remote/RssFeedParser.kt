@@ -90,7 +90,22 @@ object RssFeedParser {
 
 private val PUB_DATE_FORMAT = DateTimeFormatter.RFC_1123_DATE_TIME
 
+// RFC_1123_DATE_TIME only understands numeric zone offsets (and GMT/UT) - but plenty of
+// feeds (WordPress/PowerPress-generated ones especially) emit US zone abbreviations like
+// "PDT" instead, which otherwise silently fail to parse and drop every episode in the feed.
+private val ZONE_ABBREVIATIONS = mapOf(
+    "PST" to "-0800", "PDT" to "-0700",
+    "MST" to "-0700", "MDT" to "-0600",
+    "CST" to "-0600", "CDT" to "-0500",
+    "EST" to "-0500", "EDT" to "-0400",
+)
+
 fun parsePubDate(raw: String?): java.time.Instant? {
     if (raw.isNullOrBlank()) return null
-    return runCatching { ZonedDateTime.parse(raw.trim(), PUB_DATE_FORMAT).toInstant() }.getOrNull()
+    val trimmed = raw.trim()
+    val normalized = ZONE_ABBREVIATIONS.entries
+        .firstOrNull { (abbr, _) -> trimmed.endsWith(abbr) }
+        ?.let { (abbr, offset) -> trimmed.removeSuffix(abbr) + offset }
+        ?: trimmed
+    return runCatching { ZonedDateTime.parse(normalized, PUB_DATE_FORMAT).toInstant() }.getOrNull()
 }
