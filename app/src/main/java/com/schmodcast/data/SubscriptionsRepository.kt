@@ -11,11 +11,14 @@ class SubscriptionsRepository(private val podcastDao: PodcastDao) {
     val subscriptions: Flow<List<Podcast>> =
         podcastDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
-    suspend fun toggleSubscription(podcast: Podcast) {
-        if (podcastDao.isSubscribed(podcast.id)) {
+    /** Returns true if the podcast is now subscribed, false if it was just unsubscribed. */
+    suspend fun toggleSubscription(podcast: Podcast): Boolean {
+        val wasSubscribed = podcastDao.isSubscribed(podcast.id)
+        if (wasSubscribed) {
             podcastDao.deleteById(podcast.id)
         } else {
             podcastDao.insert(podcast.toEntity())
         }
+        return !wasSubscribed
     }
 }

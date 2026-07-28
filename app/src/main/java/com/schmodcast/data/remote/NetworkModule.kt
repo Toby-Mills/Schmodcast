@@ -2,15 +2,19 @@ package com.schmodcast.data.remote
 
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 
 object NetworkModule {
     private val json = Json { ignoreUnknownKeys = true }
 
+    val okHttpClient: OkHttpClient by lazy { OkHttpClient() }
+
     val itunesApi: ItunesSearchApi by lazy {
         Retrofit.Builder()
             .baseUrl("https://itunes.apple.com/")
+            .client(okHttpClient)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(ItunesSearchApi::class.java)

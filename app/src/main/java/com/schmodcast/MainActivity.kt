@@ -1,9 +1,12 @@
 package com.schmodcast
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -22,13 +25,20 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.schmodcast.ui.library.LibraryScreen
 import com.schmodcast.ui.nav.Destination
+import com.schmodcast.ui.queue.QueueScreen
 import com.schmodcast.ui.search.SearchScreen
 import com.schmodcast.ui.theme.SchmodcastTheme
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             SchmodcastTheme {
                 SchmodcastApp()
@@ -69,9 +79,10 @@ fun SchmodcastApp() {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Destination.Library.route,
+            startDestination = Destination.Queue.route,
             modifier = Modifier.padding(innerPadding),
         ) {
+            composable(Destination.Queue.route) { QueueScreen() }
             composable(Destination.Library.route) { LibraryScreen() }
             composable(Destination.Search.route) { SearchScreen() }
         }

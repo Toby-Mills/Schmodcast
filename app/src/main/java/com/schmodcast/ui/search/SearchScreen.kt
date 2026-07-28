@@ -34,6 +34,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.schmodcast.data.model.Podcast
+import com.schmodcast.episodeRepository
 import com.schmodcast.subscriptionsRepository
 import kotlinx.coroutines.launch
 
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 fun SearchScreen(viewModel: SearchViewModel = viewModel()) {
     val context = LocalContext.current
     val repository = remember(context) { context.subscriptionsRepository() }
+    val episodeRepository = remember(context) { context.episodeRepository() }
     val scope = rememberCoroutineScope()
 
     val query by viewModel.query.collectAsStateWithLifecycle()
@@ -94,7 +96,14 @@ fun SearchScreen(viewModel: SearchViewModel = viewModel()) {
                                     podcast = podcast,
                                     isSubscribed = podcast.id in subscribedIds,
                                     onToggleSubscribe = {
-                                        scope.launch { repository.toggleSubscription(podcast) }
+                                        scope.launch {
+                                            val nowSubscribed = repository.toggleSubscription(podcast)
+                                            if (nowSubscribed) {
+                                                episodeRepository.refreshFeed(podcast)
+                                            } else {
+                                                episodeRepository.removeForPodcast(podcast.id)
+                                            }
+                                        }
                                     },
                                 )
                             }
