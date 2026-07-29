@@ -2,12 +2,14 @@ package com.schmodcast.ui.queue
 
 import android.app.Application
 import android.content.ComponentName
+import android.os.Bundle
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
 import com.schmodcast.data.download.DownloadState
@@ -148,6 +150,12 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
     fun onSpeedChange(speed: Float) {
         controller?.setPlaybackSpeed(speed)
         _playbackState.update { it.copy(playbackSpeed = speed) }
+    }
+
+    fun onEpisodeClick(episode: Episode) {
+        val c = controller ?: return
+        val args = Bundle().apply { putString(PlaybackService.EXTRA_EPISODE_ID, episode.id) }
+        c.sendCustomCommand(SessionCommand(PlaybackService.CUSTOM_COMMAND_PLAY_EPISODE, Bundle.EMPTY), args)
     }
 
     fun onMarkPlayedClick() {

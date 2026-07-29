@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -84,7 +85,7 @@ fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
     var expanded by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        val nowPlaying = queue.first()
+        val nowPlaying = queue.firstOrNull { it.id == playbackState.currentEpisodeId } ?: queue.first()
         NowPlayingCard(
             episode = nowPlaying,
             isPlaying = playbackState.isPlaying,
@@ -103,8 +104,7 @@ fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
             onDownloadClick = { viewModel.onDownloadClick(nowPlaying) },
         )
 
-        val upNext = queue.drop(1)
-        if (upNext.isNotEmpty()) {
+        if (queue.isNotEmpty()) {
             Text(
                 text = "Up Next",
                 style = MaterialTheme.typography.titleMedium,
@@ -116,11 +116,13 @@ fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(upNext, key = { it.id }) { episode ->
+                items(queue, key = { it.id }) { episode ->
                     UpNextRow(
                         episode = episode,
                         downloadState = downloadStates[episode.id] ?: DownloadState.NotDownloaded,
                         onDownloadClick = { viewModel.onDownloadClick(episode) },
+                        onClick = { viewModel.onEpisodeClick(episode) },
+                        isSelected = episode.id == nowPlaying.id,
                     )
                 }
             }
@@ -505,11 +507,22 @@ private fun nextSpeed(current: Float): Float {
 }
 
 @Composable
-private fun UpNextRow(episode: Episode, downloadState: DownloadState, onDownloadClick: () -> Unit) {
+private fun UpNextRow(
+    episode: Episode,
+    downloadState: DownloadState,
+    onDownloadClick: () -> Unit,
+    onClick: () -> Unit,
+    isSelected: Boolean,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
+            .clip(RoundedCornerShape(8.dp))
+            .then(
+                if (isSelected) Modifier.background(SchmodcastTeal.copy(alpha = 0.14f)) else Modifier,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -522,8 +535,22 @@ private fun UpNextRow(episode: Episode, downloadState: DownloadState, onDownload
                 .clip(RoundedCornerShape(8.dp)),
         )
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = episode.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+            Text(
+                text = episode.title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (isSelected) FontWeight.Bold else null,
+                color = if (isSelected) SchmodcastTeal else Color.Unspecified,
+                maxLines = 1,
+            )
             Text(text = episode.podcastTitle, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+        }
+        if (isSelected) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = "Now playing",
+                tint = SchmodcastTeal,
+                modifier = Modifier.size(20.dp),
+            )
         }
         Text(
             text = DATE_FORMAT.format(episode.publishedAt.atZone(ZoneId.systemDefault())),

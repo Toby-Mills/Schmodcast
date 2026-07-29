@@ -1,6 +1,7 @@
 package com.schmodcast.playback
 
 import android.net.Uri
+import android.os.Bundle
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -10,6 +11,10 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import com.schmodcast.data.EpisodeRepository
 import com.schmodcast.data.model.Episode
 import com.schmodcast.episodeRepository
@@ -31,6 +36,7 @@ class PlaybackService : MediaSessionService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var currentEpisodeId: String? = null
+    private var latestQueue: List<Episode> = emptyList()
 
     override fun onCreate() {
         super.onCreate()
@@ -56,10 +62,11 @@ class PlaybackService : MediaSessionService() {
             }
         })
 
-        mediaSession = MediaSession.Builder(this, player).build()
+        mediaSession = MediaSession.Builder(this, player).setCallback(sessionCallback).build()
 
         serviceScope.launch {
             episodeRepository.queue.collect { episodes ->
+                latestQueue = episodes
                 val stillPlayingCurrent = currentEpisodeId != null && episodes.any { it.id == currentEpisodeId }
                 when {
                     stillPlayingCurrent -> Unit // don't interrupt what's already loaded
@@ -100,6 +107,37 @@ class PlaybackService : MediaSessionService() {
         if (autoPlay) player.play()
     }
 
+    // Lets the queue UI hand-pick an episode to play out of order (tapping an "Up Next" row)
+    // without going through the normal head-of-queue flow. loadEpisode() sets currentEpisodeId,
+    // so once this episode naturally finishes, the queue collector's existing auto-advance
+    // logic takes back over and resumes playing whatever is at the head - no special-casing needed.
+    private val sessionCallback = object : MediaSession.Callback {
+        override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+            val connectionResult = super.onConnect(session, controller)
+            val sessionCommands = connectionResult.availableSessionCommands.buildUpon()
+                .add(SessionCommand(CUSTOM_COMMAND_PLAY_EPISODE, Bundle.EMPTY))
+                .build()
+            return MediaSession.ConnectionResult.accept(sessionCommands, connectionResult.availablePlayerCommands)
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            if (customCommand.customAction == CUSTOM_COMMAND_PLAY_EPISODE) {
+                val episodeId = args.getString(EXTRA_EPISODE_ID)
+                val episode = latestQueue.find { it.id == episodeId }
+                if (episode != null) {
+                    loadEpisode(episode, autoPlay = false)
+                }
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            return super.onCustomCommand(session, controller, customCommand, args)
+        }
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
@@ -110,5 +148,10 @@ class PlaybackService : MediaSessionService() {
         mediaSession = null
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        const val CUSTOM_COMMAND_PLAY_EPISODE = "com.schmodcast.PLAY_EPISODE"
+        const val EXTRA_EPISODE_ID = "episodeId"
     }
 }

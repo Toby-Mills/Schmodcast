@@ -2,7 +2,9 @@
 
 A native Android podcast player. Subscribe to shows via the iTunes Search API; every
 subscription's recent episodes (last 60 days) merge into one auto-sorted Queue with no
-manual reordering — background playback via Media3/ExoPlayer.
+manual reordering — background playback via Media3/ExoPlayer. Tapping any episode in the
+queue loads it into the player out of turn; once it finishes, playback reverts to whatever
+is at the head of the queue.
 
 ## Stack
 
