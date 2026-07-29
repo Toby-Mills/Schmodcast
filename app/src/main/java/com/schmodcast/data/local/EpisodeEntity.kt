@@ -17,6 +17,7 @@ data class EpisodeEntity(
     val durationSeconds: Long?,
     val played: Boolean = false,
     val localFilePath: String? = null,
+    val lastPositionMs: Long = 0L,
 )
 
 fun EpisodeEntity.toDomain() = Episode(
@@ -29,4 +30,5 @@ fun EpisodeEntity.toDomain() = Episode(
     publishedAt = Instant.ofEpochMilli(publishedAtEpochMillis),
     durationSeconds = durationSeconds,
     localFilePath = localFilePath,
+    lastPositionMs = lastPositionMs,
 )

@@ -38,6 +38,10 @@ is at the head of the queue.
 - Episode downloads are tracked in Room (`EpisodeEntity.localFilePath`) and consumed by
   playback — `PlaybackService` plays from the downloaded file when present, falling back
   to streaming the episode's remote URL otherwise.
+- Playback position persists per episode (`EpisodeEntity.lastPositionMs`), and the
+  last-loaded episode ID persists separately (`PlaybackStateStore`, SharedPreferences) —
+  on relaunch, `PlaybackService` resumes that episode at its saved position rather than
+  always starting from the queue head.
 - No automated tests yet.
 
 ## Keeping this current

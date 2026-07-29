@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.room.Room
 import com.schmodcast.data.EpisodeRepository
+import com.schmodcast.data.PlaybackStateStore
 import com.schmodcast.data.SubscriptionsRepository
 import com.schmodcast.data.download.EpisodeDownloadManager
 import com.schmodcast.data.local.SchmodcastDatabase
@@ -28,6 +29,10 @@ class SchmodcastApplication : Application() {
     val episodeDownloadManager: EpisodeDownloadManager by lazy {
         EpisodeDownloadManager(this, database.episodeDao(), NetworkModule.okHttpClient)
     }
+
+    val playbackStateStore: PlaybackStateStore by lazy {
+        PlaybackStateStore(this)
+    }
 }
 
 fun Context.subscriptionsRepository(): SubscriptionsRepository =
@@ -38,3 +43,6 @@ fun Context.episodeRepository(): EpisodeRepository =
 
 fun Context.episodeDownloadManager(): EpisodeDownloadManager =
     (applicationContext as SchmodcastApplication).episodeDownloadManager
+
+fun Context.playbackStateStore(): PlaybackStateStore =
+    (applicationContext as SchmodcastApplication).playbackStateStore

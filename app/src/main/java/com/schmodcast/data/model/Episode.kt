@@ -12,4 +12,5 @@ data class Episode(
     val publishedAt: Instant,
     val durationSeconds: Long?,
     val localFilePath: String? = null,
+    val lastPositionMs: Long = 0L,
 )

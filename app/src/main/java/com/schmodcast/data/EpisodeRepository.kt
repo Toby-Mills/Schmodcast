@@ -43,11 +43,17 @@ class EpisodeRepository(
                 val candidates = items.mapNotNull { it.toEntityOrNull(podcast, cutoff) }
                 Log.d(TAG, "'${podcast.title}': parsed ${items.size} item(s), ${candidates.size} within window")
                 if (candidates.isNotEmpty()) {
-                    // Preserve download state: insertAll REPLACEs by id, which would otherwise
-                    // wipe out localFilePath for episodes already downloaded on every refresh.
-                    val existingPaths = episodeDao.getByIds(candidates.map { it.id })
-                        .associate { it.id to it.localFilePath }
-                    val entities = candidates.map { it.copy(localFilePath = existingPaths[it.id]) }
+                    // Preserve download state and playback position: insertAll REPLACEs by id,
+                    // which would otherwise wipe out localFilePath/lastPositionMs for episodes
+                    // already downloaded or in-progress on every refresh.
+                    val existingById = episodeDao.getByIds(candidates.map { it.id }).associateBy { it.id }
+                    val entities = candidates.map { candidate ->
+                        val existing = existingById[candidate.id]
+                        candidate.copy(
+                            localFilePath = existing?.localFilePath,
+                            lastPositionMs = existing?.lastPositionMs ?: 0L,
+                        )
+                    }
                     episodeDao.insertAll(entities)
                 }
             }
@@ -67,6 +73,8 @@ class EpisodeRepository(
     }
 
     suspend fun markPlayed(episodeId: String) = episodeDao.markPlayed(episodeId)
+
+    suspend fun updatePosition(episodeId: String, positionMs: Long) = episodeDao.updatePosition(episodeId, positionMs)
 
     suspend fun removeForPodcast(podcastId: Long) {
         deleteLocalFiles(episodeDao.getForPodcast(podcastId))

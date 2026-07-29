@@ -519,9 +519,14 @@ private fun PlaybackProgressSlider(positionMs: Long, durationMs: Long, onSeek: (
     var isDragging by remember { mutableStateOf(false) }
     var dragPositionMs by remember { mutableFloatStateOf(0f) }
     val displayedPositionMs = if (isDragging) dragPositionMs else positionMs.toFloat()
+    // ExoPlayer reports a resumed/seeked position before it's buffered enough to report the real
+    // duration (duration stays 0/unset briefly after loadEpisode's seek), so positionMs can
+    // legitimately exceed durationMs for a moment. Clamping the slider's own value keeps it from
+    // rendering as maxed-out (100%) in that window instead of the true, still-loading progress.
+    val sliderValue = if (isDragging) displayedPositionMs else displayedPositionMs.coerceAtMost(durationMs.toFloat())
 
     Slider(
-        value = displayedPositionMs,
+        value = sliderValue,
         onValueChange = {
             isDragging = true
             dragPositionMs = it

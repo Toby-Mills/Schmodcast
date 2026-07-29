@@ -16,14 +16,20 @@ import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.schmodcast.data.EpisodeRepository
+import com.schmodcast.data.PlaybackStateStore
 import com.schmodcast.data.model.Episode
 import com.schmodcast.episodeRepository
+import com.schmodcast.playbackStateStore
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 // Plays exactly one episode at a time - whatever is currently at the head of the
 // (date-sorted) queue. There's no manual reordering, so "what's next" is entirely
@@ -32,15 +38,19 @@ import kotlinx.coroutines.launch
 class PlaybackService : MediaSessionService() {
     private lateinit var player: ExoPlayer
     private lateinit var episodeRepository: EpisodeRepository
+    private lateinit var playbackStateStore: PlaybackStateStore
     private var mediaSession: MediaSession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var currentEpisodeId: String? = null
     private var latestQueue: List<Episode> = emptyList()
+    private var positionSaveJob: Job? = null
+    private var hasLoadedInitialEpisode = false
 
     override fun onCreate() {
         super.onCreate()
         episodeRepository = episodeRepository()
+        playbackStateStore = playbackStateStore()
 
         player = ExoPlayer.Builder(this)
             .setAudioAttributes(
@@ -60,6 +70,26 @@ class PlaybackService : MediaSessionService() {
                     serviceScope.launch { episodeRepository.markPlayed(finishedId) }
                 }
             }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    startPositionSaveTicker()
+                } else {
+                    stopPositionSaveTicker()
+                    savePosition()
+                }
+            }
+
+            // Catches seeks regardless of source (skip buttons, slider drags, or the
+            // out-of-order "play this episode" custom command all end up here), so the
+            // saved resume point stays current even if the app never pauses first.
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                savePosition()
+            }
         })
 
         mediaSession = MediaSession.Builder(this, player).setCallback(sessionCallback).build()
@@ -67,6 +97,15 @@ class PlaybackService : MediaSessionService() {
         serviceScope.launch {
             episodeRepository.queue.collect { episodes ->
                 latestQueue = episodes
+                if (!hasLoadedInitialEpisode) {
+                    hasLoadedInitialEpisode = true
+                    // Resume whatever episode was last in progress (even if it isn't the queue
+                    // head) rather than always restarting at the head on a fresh launch.
+                    val resumeId = playbackStateStore.currentEpisodeId
+                    val toLoad = episodes.firstOrNull { it.id == resumeId } ?: episodes.firstOrNull()
+                    toLoad?.let { loadEpisode(it, autoPlay = false) }
+                    return@collect
+                }
                 val stillPlayingCurrent = currentEpisodeId != null && episodes.any { it.id == currentEpisodeId }
                 when {
                     stillPlayingCurrent -> Unit // don't interrupt what's already loaded
@@ -81,8 +120,29 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun startPositionSaveTicker() {
+        positionSaveJob?.cancel()
+        positionSaveJob = serviceScope.launch {
+            while (isActive) {
+                delay(POSITION_SAVE_INTERVAL_MS)
+                savePosition()
+            }
+        }
+    }
+
+    private fun stopPositionSaveTicker() {
+        positionSaveJob?.cancel()
+    }
+
+    private fun savePosition() {
+        val episodeId = currentEpisodeId ?: return
+        val positionMs = player.currentPosition.coerceAtLeast(0L)
+        serviceScope.launch { episodeRepository.updatePosition(episodeId, positionMs) }
+    }
+
     private fun loadEpisode(episode: Episode, autoPlay: Boolean) {
         currentEpisodeId = episode.id
+        playbackStateStore.currentEpisodeId = episode.id
         val metadata = MediaMetadata.Builder()
             .setTitle(episode.title)
             .setArtist(episode.podcastTitle)
@@ -103,6 +163,9 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         player.setMediaItem(mediaItem)
+        if (episode.lastPositionMs > 0L) {
+            player.seekTo(episode.lastPositionMs)
+        }
         player.prepare()
         if (autoPlay) player.play()
     }
@@ -141,17 +204,26 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
+        stopPositionSaveTicker()
+        // Capture before releasing the player/cancelling the scope - serviceScope.cancel() would
+        // otherwise cancel a just-launched save coroutine before it gets to run.
+        val finalEpisodeId = currentEpisodeId
+        val finalPositionMs = player.currentPosition.coerceAtLeast(0L)
         mediaSession?.let {
             it.player.release()
             it.release()
         }
         mediaSession = null
         serviceScope.cancel()
+        if (finalEpisodeId != null) {
+            runBlocking { episodeRepository.updatePosition(finalEpisodeId, finalPositionMs) }
+        }
         super.onDestroy()
     }
 
     companion object {
         const val CUSTOM_COMMAND_PLAY_EPISODE = "com.schmodcast.PLAY_EPISODE"
         const val EXTRA_EPISODE_ID = "episodeId"
+        private const val POSITION_SAVE_INTERVAL_MS = 5_000L
     }
 }

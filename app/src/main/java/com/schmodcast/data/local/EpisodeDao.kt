@@ -23,6 +23,9 @@ interface EpisodeDao {
     @Query("UPDATE episodes SET localFilePath = :path WHERE id = :episodeId")
     suspend fun setLocalFilePath(episodeId: String, path: String?)
 
+    @Query("UPDATE episodes SET lastPositionMs = :positionMs WHERE id = :episodeId")
+    suspend fun updatePosition(episodeId: String, positionMs: Long)
+
     @Query("SELECT * FROM episodes WHERE podcastId = :podcastId")
     suspend fun getForPodcast(podcastId: Long): List<EpisodeEntity>
 
