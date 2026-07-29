@@ -4,9 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Keep this file current.** The Architecture section below describes the app's state as of when
 it was written. If a change adds/removes a layer, swaps a library, or closes one of the gaps
-noted here (e.g. downloads not feeding playback), update this file — and `README.md`'s "Notes"
-section — in the same change. A stale architecture doc is worse than none: it actively misleads
-whoever reads it next instead of the code.
+noted here, update this file — and `README.md`'s "Notes" section — in the same change. A stale
+architecture doc is worse than none: it actively misleads whoever reads it next instead of the code.
 
 ## Commands
 
@@ -52,15 +51,20 @@ One `NavHost` in `MainActivity.kt`, three bottom-nav tabs defined in `ui/nav/Des
 - `data/remote/` — `ItunesSearchApi` (Retrofit + kotlinx-serialization, JSON, for podcast directory search) and `RssFeedParser` (a small hand-rolled `XmlPullParser`-based RSS 2.0 reader — deliberately no XML/RSS library dependency); `NetworkModule` holds the shared `OkHttpClient` and Retrofit instance
 - `data/SubscriptionsRepository.kt` — subscribe/unsubscribe against Room
 - `data/EpisodeRepository.kt` — fetches and parses each subscribed podcast's RSS feed, keeps only episodes published in the last 60 days (`QUEUE_WINDOW`), exposes the merged queue as `Flow<List<Episode>>` sorted newest-first. `RssFeedParser`'s date parsing normalizes named US timezone abbreviations (PDT/PST/EDT/etc.) to numeric offsets before handing off to `DateTimeFormatter.RFC_1123_DATE_TIME`, which otherwise silently rejects them — a real feed (WordPress/PowerPress-style) hit this and dropped every episode.
-- `data/download/EpisodeDownloadManager.kt` — downloads an episode's audio to app-internal storage (`filesDir/episode_downloads`), tracking per-episode `DownloadState` (NotDownloaded/Downloading/Downloaded/Failed) in a `StateFlow<Map<episodeId, DownloadState>>`. Runs on an app-scoped coroutine scope, not WorkManager, so an in-progress download doesn't survive process death. `EpisodeEntity.localFilePath` is *not* currently read by `PlaybackService` — playback always streams from `audioUrl`, so downloading an episode doesn't yet change how it plays.
+- `data/download/EpisodeDownloadManager.kt` — downloads an episode's audio to app-internal storage (`filesDir/episode_downloads`), tracking per-episode `DownloadState` (NotDownloaded/Downloading/Downloaded/Failed) in a `StateFlow<Map<episodeId, DownloadState>>`. Runs on an app-scoped coroutine scope, not WorkManager, so an in-progress download doesn't survive process death. `PlaybackService.loadEpisode` reads `EpisodeEntity.localFilePath` and plays from that file when it exists on disk, falling back to streaming `audioUrl` otherwise — so a downloaded episode plays offline.
 
 ### The Queue's core behavior
 There is deliberately no episode-browsing UI and no manual reordering: every subscribed podcast's recent episodes are merged into one global, date-sorted queue, and "current" is always whatever sits at its head.
+
+`QueueScreen.kt`'s now-playing card has two layouts sharing one `NowPlayingCard` composable: a compact `CollapsedPlayerRow` (default), and a full-screen-ish `ExpandedPlayerContent` (80% of screen height) reached by dragging the handle at the card's bottom edge (`DragHandle`, gesture logic in `QueueScreen.kt`, not a separate library — no `BottomSheetScaffold`/`ModalBottomSheet` is used). The expanded layout adds skip ±30s/2min, a speed-cycling button, and mark-as-played, alongside the always-visible progress slider both layouts share via `PlaybackProgressSlider`.
 
 ### Playback
 `playback/PlaybackService.kt` is a Media3 `MediaSessionService` + `ExoPlayer`, giving background playback with lock-screen/notification controls (requires `FOREGROUND_SERVICE_MEDIA_PLAYBACK` + `POST_NOTIFICATIONS` permissions declared in the manifest; `POST_NOTIFICATIONS` is requested at runtime from `MainActivity` on API 33+). It is the sole source of truth for "what's playing":
 - It collects `EpisodeRepository.queue` directly (not through a ViewModel) and loads whatever is at the head.
 - On natural completion (`Player.STATE_ENDED`) it calls `episodeRepository.markPlayed(...)`, which removes that episode from the queue `Flow`. The service treats "the episode I was playing just disappeared from the queue" as the auto-advance signal, and loads + auto-plays the new head. A queue reshuffle for any other reason (e.g. a background refresh surfacing a fresher episode) does *not* interrupt what's already playing.
-- `ui/queue/QueueViewModel.kt` never touches the `ExoPlayer` directly — it connects a Media3 `MediaController` to `PlaybackService` via `SessionToken` and only issues transport commands (play/pause/seek), polling playback position on a 500ms ticker while playing.
+- `ui/queue/QueueViewModel.kt` never touches the `ExoPlayer` directly — it connects a Media3 `MediaController` to `PlaybackService` via `SessionToken` and issues transport commands (play/pause, seek, ±2min/30s skip, playback speed via `setPlaybackSpeed`), polling playback position and speed on a 500ms ticker while playing. A manual "mark as played" tap instead calls `episodeRepository.markPlayed(...)` directly from the ViewModel, bypassing the controller entirely — `PlaybackService`'s queue collector can't tell that apart from natural completion (both just remove the episode from the queue `Flow`), so the existing auto-advance path handles it for free.
 
 Any change to episode fetching, queue filtering, or playback ordering should account for this split: `EpisodeRepository`/Room is the single source of truth for queue contents, and `PlaybackService` reacts to it rather than being told what to play by the UI layer.
+
+### Theming
+`ui/theme/Theme.kt`'s `SchmodcastTheme` defaults `dynamicColor = true`, so on API 31+ devices the app actually renders Material You's wallpaper-derived palette, not the static `SchmodcastNavy`/`SchmodcastOrange`/`SchmodcastCream`/`SchmodcastTeal` scheme sitting next to it in `Color.kt` — `MaterialTheme.colorScheme.*` will not reflect the brand colors on those devices. Composables that need the actual logo colors regardless of theme (e.g. the expanded player's play/pause button and skip buttons) reference the `Schmodcast*` constants from `Color.kt` directly instead of going through `MaterialTheme.colorScheme`.

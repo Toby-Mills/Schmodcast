@@ -33,8 +33,9 @@ manual reordering — background playback via Media3/ExoPlayer.
   (`NoClassDefFoundError: org/gradle/features/binding/ProjectTypeBinding`). The project is
   pinned to AGP 9.1.1 until that's fixed upstream — bump `agp` in
   `gradle/libs.versions.toml` once a patch release resolves it.
-- Episode downloads are tracked in Room (`EpisodeEntity.localFilePath`) but not yet
-  consumed by playback — `PlaybackService` always streams from the episode's remote URL.
+- Episode downloads are tracked in Room (`EpisodeEntity.localFilePath`) and consumed by
+  playback — `PlaybackService` plays from the downloaded file when present, falling back
+  to streaming the episode's remote URL otherwise.
 - No automated tests yet.
 
 ## Keeping this current

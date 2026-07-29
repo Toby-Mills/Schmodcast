@@ -34,7 +34,11 @@ data class PlaybackUiState(
     val currentEpisodeId: String? = null,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
+    val playbackSpeed: Float = 1f,
 )
+
+private const val SKIP_FORWARD_MS = 2 * 60 * 1000L
+private const val SKIP_BACK_MS = 30 * 1000L
 
 class QueueViewModel(application: Application) : AndroidViewModel(application) {
     private val episodeRepository = application.episodeRepository()
@@ -102,6 +106,7 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
                 currentEpisodeId = c.currentMediaItem?.mediaId,
                 positionMs = c.currentPosition,
                 durationMs = c.duration.coerceAtLeast(0L),
+                playbackSpeed = c.playbackParameters.speed,
             )
         }
     }
@@ -127,6 +132,27 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onSeek(positionMs: Long) {
         controller?.seekTo(positionMs)
+    }
+
+    fun onSkipForward() {
+        val c = controller ?: return
+        val duration = c.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+        c.seekTo((c.currentPosition + SKIP_FORWARD_MS).coerceAtMost(duration))
+    }
+
+    fun onSkipBack() {
+        val c = controller ?: return
+        c.seekTo((c.currentPosition - SKIP_BACK_MS).coerceAtLeast(0L))
+    }
+
+    fun onSpeedChange(speed: Float) {
+        controller?.setPlaybackSpeed(speed)
+        _playbackState.update { it.copy(playbackSpeed = speed) }
+    }
+
+    fun onMarkPlayedClick() {
+        val episodeId = playbackState.value.currentEpisodeId ?: return
+        viewModelScope.launch { episodeRepository.markPlayed(episodeId) }
     }
 
     fun onDownloadClick(episode: Episode) {
