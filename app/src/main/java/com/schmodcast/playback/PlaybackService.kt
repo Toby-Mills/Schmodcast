@@ -1,5 +1,6 @@
 package com.schmodcast.playback
 
+import android.net.Uri
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -12,6 +13,7 @@ import androidx.media3.session.MediaSessionService
 import com.schmodcast.data.EpisodeRepository
 import com.schmodcast.data.model.Episode
 import com.schmodcast.episodeRepository
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -84,9 +86,12 @@ class PlaybackService : MediaSessionService() {
             }
             .build()
 
+        val localFile = episode.localFilePath?.let { File(it) }?.takeIf { it.exists() }
+        val uri = if (localFile != null) Uri.fromFile(localFile) else episode.audioUrl.toUri()
+
         val mediaItem = MediaItem.Builder()
             .setMediaId(episode.id)
-            .setUri(episode.audioUrl)
+            .setUri(uri)
             .setMediaMetadata(metadata)
             .build()
 
