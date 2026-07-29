@@ -134,6 +134,11 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onSeek(positionMs: Long) {
         controller?.seekTo(positionMs)
+        // Reflect the seek immediately: syncStateFromController() only otherwise runs from the
+        // play/pause listener or the position ticker, and the ticker only runs while playing — so
+        // while paused, nothing would update positionMs and the slider would snap back to its
+        // pre-seek value the moment the drag released.
+        _playbackState.update { it.copy(positionMs = positionMs) }
     }
 
     fun onSkipForward() {

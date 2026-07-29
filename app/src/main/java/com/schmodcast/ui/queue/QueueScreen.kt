@@ -1,5 +1,7 @@
 package com.schmodcast.ui.queue
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,10 +34,12 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,10 +52,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -500,6 +511,9 @@ private fun SpeedCycleButton(speed: Float, onClick: () -> Unit) {
     }
 }
 
+private val PROGRESS_TRACK_HEIGHT = 28.dp
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaybackProgressSlider(positionMs: Long, durationMs: Long, onSeek: (Long) -> Unit) {
     var isDragging by remember { mutableStateOf(false) }
@@ -517,11 +531,89 @@ private fun PlaybackProgressSlider(positionMs: Long, durationMs: Long, onSeek: (
             isDragging = false
         },
         valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
+        track = { state -> LogoTiledTrack(state = state) },
     )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(text = formatDuration(displayedPositionMs.toLong()), style = MaterialTheme.typography.bodySmall)
         Text(text = formatDuration(durationMs), style = MaterialTheme.typography.bodySmall)
     }
+}
+
+// Replaces the Slider's default solid-color track with the app logo tiled across the filled
+// portion, repeating at a fixed on-screen size regardless of the source PNG's resolution — the
+// bitmap is pre-scaled to that tile size before being handed to ImageShader, since ImageShader
+// otherwise tiles at the bitmap's native pixel size.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LogoTiledTrack(state: SliderState, modifier: Modifier = Modifier) {
+    val logoBrush = rememberTiledLogoBrush(tileSize = PROGRESS_TRACK_HEIGHT)
+    val filledFraction = state.coercedValueAsFraction.coerceIn(0f, 1f)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(PROGRESS_TRACK_HEIGHT)
+            .clip(RoundedCornerShape(PROGRESS_TRACK_HEIGHT / 2))
+            // MaterialTheme.colorScheme.surfaceVariant lands close enough to the NowPlayingCard's
+            // own container color under dynamic (Material You) theming to read as invisible;
+            // outlineVariant is what the drag handle pill already relies on for contrast here.
+            .background(MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(filledFraction)
+                .fillMaxHeight()
+                // The logo PNG's own background is a near-white square around the navy badge, so
+                // it's keyed out to transparent (see rememberTiledLogoBrush) and painted over a
+                // navy fill here — otherwise every tile repeat shows a visible white square behind
+                // the badge instead of one continuous navy background.
+                .background(SchmodcastNavy)
+                .background(logoBrush),
+        )
+    }
+}
+
+@Composable
+private fun rememberTiledLogoBrush(tileSize: Dp): Brush {
+    val context = LocalContext.current
+    val tileSizePx = with(LocalDensity.current) { tileSize.roundToPx() }.coerceAtLeast(1)
+    return remember(tileSizePx) {
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(sourceSize = 1254, targetSize = tileSizePx * 3)
+        }
+        val source = BitmapFactory.decodeResource(context.resources, R.drawable.schmodcast_logo, decodeOptions)
+        val keyed = keyOutNearWhite(source)
+        val tile = Bitmap.createScaledBitmap(keyed, tileSizePx, tileSizePx, true)
+        ShaderBrush(ImageShader(tile.asImageBitmap(), TileMode.Repeated, TileMode.Repeated))
+    }
+}
+
+private fun calculateInSampleSize(sourceSize: Int, targetSize: Int): Int {
+    var sampleSize = 1
+    while (sourceSize / (sampleSize * 2) >= targetSize) {
+        sampleSize *= 2
+    }
+    return sampleSize
+}
+
+// Turns the logo's near-white background transparent (it ships as an opaque RGB PNG with no
+// alpha channel) so the badge can be tiled directly over a solid navy fill without each repeat
+// carrying its own visible white square.
+private fun keyOutNearWhite(source: Bitmap): Bitmap {
+    val bitmap = source.copy(Bitmap.Config.ARGB_8888, true)
+    val pixels = IntArray(bitmap.width * bitmap.height)
+    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    for (i in pixels.indices) {
+        val pixel = pixels[i]
+        val r = (pixel shr 16) and 0xFF
+        val g = (pixel shr 8) and 0xFF
+        val b = pixel and 0xFF
+        if (r > 235 && g > 235 && b > 235) {
+            pixels[i] = 0
+        }
+    }
+    bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    return bitmap
 }
 
 @Composable
