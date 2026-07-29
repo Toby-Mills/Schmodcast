@@ -1,16 +1,20 @@
 package com.schmodcast.ui.queue
 
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,14 +49,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
@@ -60,11 +68,17 @@ import com.schmodcast.data.download.DownloadState
 import com.schmodcast.data.model.Episode
 import com.schmodcast.ui.theme.SchmodcastNavy
 import com.schmodcast.ui.theme.SchmodcastTeal
+import kotlinx.coroutines.launch
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 private val DATE_FORMAT = DateTimeFormatter.ofPattern("MMM d")
 private val SPEED_OPTIONS = listOf(1f, 1.2f, 1.4f, 1.6f, 1.8f, 2f)
+
+// A flick whose velocity alone would cross the full collapsed-to-expanded range in well under a
+// second commits to that direction outright, instead of requiring the drag to actually cross the
+// halfway mark first.
+private const val FLING_VELOCITY_THRESHOLD = 1.5f
 
 @Composable
 fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
@@ -82,7 +96,8 @@ fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
         return
     }
 
-    var expanded by remember { mutableStateOf(false) }
+    val dragProgress = remember { Animatable(0f) }
+    val coroutineScope = rememberCoroutineScope()
 
     Column(modifier = Modifier.fillMaxSize()) {
         val nowPlaying = queue.firstOrNull { it.id == playbackState.currentEpisodeId } ?: queue.first()
@@ -93,8 +108,30 @@ fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
             durationMs = playbackState.durationMs,
             playbackSpeed = playbackState.playbackSpeed,
             downloadState = downloadStates[nowPlaying.id] ?: DownloadState.NotDownloaded,
-            expanded = expanded,
-            onExpandedChange = { expanded = it },
+            dragProgress = dragProgress.value,
+            onDragProgressDelta = { delta ->
+                coroutineScope.launch {
+                    dragProgress.snapTo((dragProgress.value + delta).coerceIn(0f, 1f))
+                }
+            },
+            // velocity is signed, in progress-units/second (see dragRangePx in NowPlayingCard) — a
+            // fast flick commits to the direction it's moving even if the halfway mark wasn't
+            // reached, rather than always falling back to whichever side progress is closer to.
+            onDragEnd = { velocity ->
+                val target = when {
+                    velocity > FLING_VELOCITY_THRESHOLD -> 1f
+                    velocity < -FLING_VELOCITY_THRESHOLD -> 0f
+                    dragProgress.value > 0.5f -> 1f
+                    else -> 0f
+                }
+                coroutineScope.launch {
+                    dragProgress.animateTo(
+                        targetValue = target,
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy),
+                        initialVelocity = velocity,
+                    )
+                }
+            },
             onPlayPauseClick = viewModel::onPlayPauseClick,
             onSeek = viewModel::onSeek,
             onSkipForward = viewModel::onSkipForward,
@@ -138,8 +175,9 @@ private fun NowPlayingCard(
     durationMs: Long,
     playbackSpeed: Float,
     downloadState: DownloadState,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
+    dragProgress: Float,
+    onDragProgressDelta: (Float) -> Unit,
+    onDragEnd: (velocity: Float) -> Unit,
     onPlayPauseClick: () -> Unit,
     onSeek: (Long) -> Unit,
     onSkipForward: () -> Unit,
@@ -148,56 +186,100 @@ private fun NowPlayingCard(
     onSpeedChange: (Float) -> Unit,
     onDownloadClick: () -> Unit,
 ) {
-    Card(
+    val expanded = dragProgress > 0.5f
+
+    BoxWithConstraints(
         modifier = Modifier
             .padding(16.dp)
-            .fillMaxWidth()
-            .then(if (expanded) Modifier.fillMaxHeight(0.8f) else Modifier)
-            .animateContentSize(),
+            .fillMaxWidth(),
     ) {
-        if (expanded) {
-            ExpandedPlayerContent(
-                episode = episode,
-                isPlaying = isPlaying,
-                positionMs = positionMs,
-                durationMs = durationMs,
-                playbackSpeed = playbackSpeed,
-                downloadState = downloadState,
-                onExpandedChange = onExpandedChange,
-                onPlayPauseClick = onPlayPauseClick,
-                onSeek = onSeek,
-                onSkipForward = onSkipForward,
-                onSkipBack = onSkipBack,
-                onMarkPlayed = onMarkPlayed,
-                onSpeedChange = onSpeedChange,
-                onDownloadClick = onDownloadClick,
-            )
-        } else {
-            CollapsedPlayerRow(
-                episode = episode,
-                isPlaying = isPlaying,
-                positionMs = positionMs,
-                durationMs = durationMs,
-                downloadState = downloadState,
-                expanded = expanded,
-                onExpandedChange = onExpandedChange,
-                onPlayPauseClick = onPlayPauseClick,
-                onSeek = onSeek,
-                onDownloadClick = onDownloadClick,
+        val density = LocalDensity.current
+        val expandedHeight = maxHeight * 0.8f
+        val totalHeight = lerp(COLLAPSED_PLAYER_HEIGHT, expandedHeight, dragProgress)
+        val cardHeight = totalHeight - HANDLE_ROW_HEIGHT
+        // Converts a raw pixel drag delta from the handle into a progress delta, scaled
+        // against how much vertical travel actually separates collapsed from expanded.
+        val dragRangePx = with(density) { (expandedHeight - COLLAPSED_PLAYER_HEIGHT).toPx().coerceAtLeast(1f) }
+
+        // The card is anchored to the top of the screen and grows downward, so dragging the
+        // handle down (positive dragAmount) should expand it, matching the pre-existing
+        // pull-to-expand behavior.
+        val onHandleDrag: (Float) -> Unit = { dragAmount -> onDragProgressDelta(dragAmount / dragRangePx) }
+        // Same conversion applied to the fling velocity reported when the drag is released, so
+        // "1.0" consistently means "would cross the full collapsed-to-expanded range in a second"
+        // regardless of screen size.
+        val onHandleDragEnd: (Float) -> Unit = { velocityPx -> onDragEnd(velocityPx / dragRangePx) }
+
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(cardHeight),
+            ) {
+                // The handle lives outside the Card (below), not nested inside either branch here,
+                // for two reasons: (1) it stays mounted across the content swap that happens when
+                // dragging past the halfway point, so an in-flight gesture keeps tracking instead
+                // of being disposed and remounted mid-drag; (2) Card clips its content to its own
+                // rounded-rect bounds, which was cutting off the bottom half of the handle's
+                // enlarged touch target when the handle lived at the card's bottom edge.
+                if (expanded) {
+                    ExpandedPlayerBody(
+                        episode = episode,
+                        isPlaying = isPlaying,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        playbackSpeed = playbackSpeed,
+                        downloadState = downloadState,
+                        onPlayPauseClick = onPlayPauseClick,
+                        onSeek = onSeek,
+                        onSkipForward = onSkipForward,
+                        onSkipBack = onSkipBack,
+                        onMarkPlayed = onMarkPlayed,
+                        onSpeedChange = onSpeedChange,
+                        onDownloadClick = onDownloadClick,
+                    )
+                } else {
+                    CollapsedPlayerBody(
+                        episode = episode,
+                        isPlaying = isPlaying,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        downloadState = downloadState,
+                        onPlayPauseClick = onPlayPauseClick,
+                        onSeek = onSeek,
+                        onDownloadClick = onDownloadClick,
+                    )
+                }
+            }
+            DragHandle(
+                onDrag = onHandleDrag,
+                onDragEnd = onHandleDragEnd,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(vertical = 8.dp),
             )
         }
     }
 }
 
+// Approximate height of CollapsedPlayerBody's natural wrap-content layout (Card + handle row
+// combined), used both as the anchor for the collapsed end of the drag range and as the fixed
+// total height at rest — the height is always explicit now (see onHandleDrag comment above), so
+// this can no longer be sidestepped by falling back to true wrap-content sizing at progress == 0.
+private val COLLAPSED_PLAYER_HEIGHT = 200.dp
+
+// The handle's reserved row: the 4dp pill plus its 8dp top/bottom padding. Subtracted from the
+// interpolated total height to get the Card's own height, since the handle now sits below the
+// Card rather than inside it.
+private val HANDLE_ROW_HEIGHT = 20.dp
+
 @Composable
-private fun CollapsedPlayerRow(
+private fun CollapsedPlayerBody(
     episode: Episode,
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
     downloadState: DownloadState,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
     onPlayPauseClick: () -> Unit,
     onSeek: (Long) -> Unit,
     onDownloadClick: () -> Unit,
@@ -235,26 +317,17 @@ private fun CollapsedPlayerRow(
         }
 
         PlaybackProgressSlider(positionMs = positionMs, durationMs = durationMs, onSeek = onSeek)
-
-        DragHandle(
-            expanded = expanded,
-            onExpandedChange = onExpandedChange,
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(top = 8.dp),
-        )
     }
 }
 
 @Composable
-private fun ExpandedPlayerContent(
+private fun ExpandedPlayerBody(
     episode: Episode,
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
     playbackSpeed: Float,
     downloadState: DownloadState,
-    onExpandedChange: (Boolean) -> Unit,
     onPlayPauseClick: () -> Unit,
     onSeek: (Long) -> Unit,
     onSkipForward: () -> Unit,
@@ -263,102 +336,92 @@ private fun ExpandedPlayerContent(
     onSpeedChange: (Float) -> Unit,
     onDownloadClick: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Column(
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        AsyncImage(
+            model = episode.podcastArtworkUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
             modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .size(180.dp)
+                .clip(RoundedCornerShape(20.dp)),
+        )
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        Text(
+            text = episode.title,
+            style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = episode.podcastTitle,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        PlaybackProgressSlider(positionMs = positionMs, durationMs = durationMs, onSeek = onSeek)
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsyncImage(
-                model = episode.podcastArtworkUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(180.dp)
-                    .clip(RoundedCornerShape(20.dp)),
+            TransportButton(
+                painter = painterResource(R.drawable.ic_skip_back),
+                label = "30",
+                contentDescription = "Skip back 30 seconds",
+                diameter = 64.dp,
+                iconSize = 26.dp,
+                containerColor = SchmodcastTeal.copy(alpha = 0.16f),
+                contentColor = SchmodcastNavy,
+                onClick = onSkipBack,
             )
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            Text(
-                text = episode.title,
-                style = MaterialTheme.typography.titleLarge,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth(),
+            PlayPauseButton(isPlaying = isPlaying, onClick = onPlayPauseClick)
+            TransportButton(
+                painter = painterResource(R.drawable.ic_skip_forward),
+                label = "2m",
+                contentDescription = "Skip forward 2 minutes",
+                diameter = 64.dp,
+                iconSize = 26.dp,
+                containerColor = SchmodcastTeal.copy(alpha = 0.16f),
+                contentColor = SchmodcastNavy,
+                onClick = onSkipForward,
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = episode.podcastTitle,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            PlaybackProgressSlider(positionMs = positionMs, durationMs = durationMs, onSeek = onSeek)
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TransportButton(
-                    painter = painterResource(R.drawable.ic_skip_back),
-                    label = "30",
-                    contentDescription = "Skip back 30 seconds",
-                    diameter = 64.dp,
-                    iconSize = 26.dp,
-                    containerColor = SchmodcastTeal.copy(alpha = 0.16f),
-                    contentColor = SchmodcastNavy,
-                    onClick = onSkipBack,
-                )
-                PlayPauseButton(isPlaying = isPlaying, onClick = onPlayPauseClick)
-                TransportButton(
-                    painter = painterResource(R.drawable.ic_skip_forward),
-                    label = "2m",
-                    contentDescription = "Skip forward 2 minutes",
-                    diameter = 64.dp,
-                    iconSize = 26.dp,
-                    containerColor = SchmodcastTeal.copy(alpha = 0.16f),
-                    contentColor = SchmodcastNavy,
-                    onClick = onSkipForward,
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                DownloadIndicator(state = downloadState, onClick = onDownloadClick, iconSize = 28.dp)
-                SpeedCycleButton(speed = playbackSpeed, onClick = { onSpeedChange(nextSpeed(playbackSpeed)) })
-                IconButton(onClick = onMarkPlayed) {
-                    Icon(
-                        imageVector = Icons.Filled.CheckCircle,
-                        contentDescription = "Mark as played",
-                        modifier = Modifier.size(28.dp),
-                    )
-                }
-            }
         }
 
-        DragHandle(
-            expanded = true,
-            onExpandedChange = onExpandedChange,
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(vertical = 8.dp),
-        )
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DownloadIndicator(state = downloadState, onClick = onDownloadClick, iconSize = 28.dp)
+            SpeedCycleButton(speed = playbackSpeed, onClick = { onSpeedChange(nextSpeed(playbackSpeed)) })
+            IconButton(onClick = onMarkPlayed) {
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = "Mark as played",
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        }
     }
 }
 
@@ -462,41 +525,54 @@ private fun PlaybackProgressSlider(positionMs: Long, durationMs: Long, onSeek: (
 }
 
 @Composable
-private fun DragHandle(expanded: Boolean, onExpandedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
-    var dragAccumulator by remember { mutableFloatStateOf(0f) }
-    var handled by remember { mutableStateOf(false) }
-    val currentExpanded by rememberUpdatedState(expanded)
-    val currentOnExpandedChange by rememberUpdatedState(onExpandedChange)
+private fun DragHandle(
+    onDrag: (Float) -> Unit,
+    onDragEnd: (velocity: Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    // draggable (rather than a raw detectVerticalDragGestures pointerInput) reports the release
+    // velocity via onDragStopped, which is what lets a quick flick complete the transition without
+    // needing to physically drag all the way across the halfway mark.
+    val draggableState = rememberDraggableState { delta -> currentOnDrag(delta) }
 
     Box(
+        // Grows the touch/drag-detection area well past the visible pill without reporting a
+        // bigger size upward, so the layout footprint (and spacing around it) is unchanged. This
+        // outer box must stay unclipped — Compose's clip() also restricts hit-testing to its own
+        // bounds, which would silently cancel the expanded area out again.
         modifier = modifier
             .size(width = 32.dp, height = 4.dp)
-            .clip(RoundedCornerShape(2.dp))
-            .background(MaterialTheme.colorScheme.outlineVariant)
-            .clickable { currentOnExpandedChange(!currentExpanded) }
-            .pointerInput(Unit) {
-                detectVerticalDragGestures(
-                    onDragStart = {
-                        dragAccumulator = 0f
-                        handled = false
-                    },
-                    onVerticalDrag = { change, dragAmount ->
-                        change.consume()
-                        dragAccumulator += dragAmount
-                        if (!handled && !currentExpanded && dragAccumulator > DRAG_EXPAND_THRESHOLD_PX) {
-                            currentOnExpandedChange(true)
-                            handled = true
-                        } else if (!handled && currentExpanded && dragAccumulator < -DRAG_EXPAND_THRESHOLD_PX) {
-                            currentOnExpandedChange(false)
-                            handled = true
-                        }
-                    },
-                )
-            },
-    )
+            .expandTouchTarget(horizontal = 24.dp, vertical = 20.dp)
+            .draggable(
+                state = draggableState,
+                orientation = Orientation.Vertical,
+                onDragStopped = { velocity -> currentOnDragEnd(velocity) },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 32.dp, height = 4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.outlineVariant),
+        )
+    }
 }
 
-private const val DRAG_EXPAND_THRESHOLD_PX = 40f
+private fun Modifier.expandTouchTarget(horizontal: Dp, vertical: Dp): Modifier = layout { measurable, constraints ->
+    val extraWidthPx = horizontal.roundToPx() * 2
+    val extraHeightPx = vertical.roundToPx() * 2
+    val expandedConstraints = Constraints.fixed(
+        width = constraints.maxWidth + extraWidthPx,
+        height = constraints.maxHeight + extraHeightPx,
+    )
+    val placeable = measurable.measure(expandedConstraints)
+    layout(constraints.maxWidth, constraints.maxHeight) {
+        placeable.place(-extraWidthPx / 2, -extraHeightPx / 2)
+    }
+}
 
 private fun formatSpeed(speed: Float): String =
     String.format(java.util.Locale.US, "%.1fx", speed).replace(".0x", "x")
