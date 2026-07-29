@@ -11,4 +11,5 @@ data class Episode(
     val audioUrl: String,
     val publishedAt: Instant,
     val durationSeconds: Long?,
+    val localFilePath: String? = null,
 )

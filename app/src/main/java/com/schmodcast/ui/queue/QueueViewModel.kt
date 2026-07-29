@@ -10,7 +10,9 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
+import com.schmodcast.data.download.DownloadState
 import com.schmodcast.data.model.Episode
+import com.schmodcast.episodeDownloadManager
 import com.schmodcast.episodeRepository
 import com.schmodcast.playback.PlaybackService
 import com.schmodcast.subscriptionsRepository
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -36,9 +39,19 @@ data class PlaybackUiState(
 class QueueViewModel(application: Application) : AndroidViewModel(application) {
     private val episodeRepository = application.episodeRepository()
     private val subscriptionsRepository = application.subscriptionsRepository()
+    private val downloadManager = application.episodeDownloadManager()
 
     val queue: StateFlow<List<Episode>> = episodeRepository.queue
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val downloadStates: StateFlow<Map<String, DownloadState>> =
+        combine(queue, downloadManager.states) { episodes, transientStates ->
+            episodes.associate { episode ->
+                val state = transientStates[episode.id]
+                    ?: if (episode.localFilePath != null) DownloadState.Downloaded else DownloadState.NotDownloaded
+                episode.id to state
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     private val _playbackState = MutableStateFlow(PlaybackUiState())
     val playbackState: StateFlow<PlaybackUiState> = _playbackState.asStateFlow()
@@ -114,6 +127,13 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onSeek(positionMs: Long) {
         controller?.seekTo(positionMs)
+    }
+
+    fun onDownloadClick(episode: Episode) {
+        when (downloadStates.value[episode.id]) {
+            is DownloadState.Downloaded, is DownloadState.Downloading -> downloadManager.cancelOrRemove(episode)
+            else -> downloadManager.download(episode)
+        }
     }
 
     override fun onCleared() {

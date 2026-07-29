@@ -12,8 +12,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +37,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.schmodcast.R
+import com.schmodcast.data.download.DownloadState
 import com.schmodcast.data.model.Episode
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -45,6 +48,7 @@ private val DATE_FORMAT = DateTimeFormatter.ofPattern("MMM d")
 fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
     val queue by viewModel.queue.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
+    val downloadStates by viewModel.downloadStates.collectAsStateWithLifecycle()
 
     if (queue.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -57,13 +61,16 @@ fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        val nowPlaying = queue.first()
         NowPlayingCard(
-            episode = queue.first(),
+            episode = nowPlaying,
             isPlaying = playbackState.isPlaying,
             positionMs = playbackState.positionMs,
             durationMs = playbackState.durationMs,
+            downloadState = downloadStates[nowPlaying.id] ?: DownloadState.NotDownloaded,
             onPlayPauseClick = viewModel::onPlayPauseClick,
             onSeek = viewModel::onSeek,
+            onDownloadClick = { viewModel.onDownloadClick(nowPlaying) },
         )
 
         val upNext = queue.drop(1)
@@ -79,7 +86,13 @@ fun QueueScreen(viewModel: QueueViewModel = viewModel()) {
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(upNext, key = { it.id }) { episode -> UpNextRow(episode) }
+                items(upNext, key = { it.id }) { episode ->
+                    UpNextRow(
+                        episode = episode,
+                        downloadState = downloadStates[episode.id] ?: DownloadState.NotDownloaded,
+                        onDownloadClick = { viewModel.onDownloadClick(episode) },
+                    )
+                }
             }
         }
     }
@@ -91,8 +104,10 @@ private fun NowPlayingCard(
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
+    downloadState: DownloadState,
     onPlayPauseClick: () -> Unit,
     onSeek: (Long) -> Unit,
+    onDownloadClick: () -> Unit,
 ) {
     Card(modifier = Modifier.padding(16.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -109,6 +124,7 @@ private fun NowPlayingCard(
                     Text(text = episode.title, style = MaterialTheme.typography.titleMedium, maxLines = 2)
                     Text(text = episode.podcastTitle, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
                 }
+                DownloadIndicator(state = downloadState, onClick = onDownloadClick)
                 IconButton(onClick = onPlayPauseClick) {
                     if (isPlaying) {
                         Icon(
@@ -153,7 +169,7 @@ private fun NowPlayingCard(
 }
 
 @Composable
-private fun UpNextRow(episode: Episode) {
+private fun UpNextRow(episode: Episode, downloadState: DownloadState, onDownloadClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -177,6 +193,35 @@ private fun UpNextRow(episode: Episode) {
             text = DATE_FORMAT.format(episode.publishedAt.atZone(ZoneId.systemDefault())),
             style = MaterialTheme.typography.bodySmall,
         )
+        DownloadIndicator(state = downloadState, onClick = onDownloadClick)
+    }
+}
+
+@Composable
+private fun DownloadIndicator(state: DownloadState, onClick: () -> Unit) {
+    when (state) {
+        is DownloadState.Downloading -> {
+            IconButton(onClick = onClick) {
+                if (state.progress > 0f) {
+                    CircularProgressIndicator(progress = { state.progress }, modifier = Modifier.size(24.dp))
+                } else {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+            }
+        }
+        is DownloadState.Downloaded -> {
+            IconButton(onClick = onClick) {
+                Icon(imageVector = Icons.Filled.Check, contentDescription = "Downloaded, tap to remove")
+            }
+        }
+        is DownloadState.NotDownloaded, is DownloadState.Failed -> {
+            IconButton(onClick = onClick) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_download),
+                    contentDescription = if (state is DownloadState.Failed) "Download failed, tap to retry" else "Download for offline playback",
+                )
+            }
+        }
     }
 }
 

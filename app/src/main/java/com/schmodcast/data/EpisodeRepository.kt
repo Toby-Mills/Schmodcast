@@ -9,6 +9,7 @@ import com.schmodcast.data.model.Podcast
 import com.schmodcast.data.remote.RssFeedParser
 import com.schmodcast.data.remote.RssItem
 import com.schmodcast.data.remote.parsePubDate
+import java.io.File
 import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
@@ -39,9 +40,16 @@ class EpisodeRepository(
 
                 val items = RssFeedParser.parse(body.byteStream())
                 val cutoff = Instant.now().minus(QUEUE_WINDOW)
-                val entities = items.mapNotNull { it.toEntityOrNull(podcast, cutoff) }
-                Log.d(TAG, "'${podcast.title}': parsed ${items.size} item(s), ${entities.size} within window")
-                if (entities.isNotEmpty()) episodeDao.insertAll(entities)
+                val candidates = items.mapNotNull { it.toEntityOrNull(podcast, cutoff) }
+                Log.d(TAG, "'${podcast.title}': parsed ${items.size} item(s), ${candidates.size} within window")
+                if (candidates.isNotEmpty()) {
+                    // Preserve download state: insertAll REPLACEs by id, which would otherwise
+                    // wipe out localFilePath for episodes already downloaded on every refresh.
+                    val existingPaths = episodeDao.getByIds(candidates.map { it.id })
+                        .associate { it.id to it.localFilePath }
+                    val entities = candidates.map { it.copy(localFilePath = existingPaths[it.id]) }
+                    episodeDao.insertAll(entities)
+                }
             }
         }.onFailure { e ->
             Log.w(TAG, "Feed refresh threw for '${podcast.title}' (${podcast.feedUrl})", e)
@@ -53,12 +61,26 @@ class EpisodeRepository(
     }
 
     suspend fun pruneOldEpisodes() {
-        episodeDao.deleteOlderThan(Instant.now().minus(QUEUE_WINDOW).toEpochMilli())
+        val cutoff = Instant.now().minus(QUEUE_WINDOW).toEpochMilli()
+        deleteLocalFiles(episodeDao.getOlderThan(cutoff))
+        episodeDao.deleteOlderThan(cutoff)
     }
 
     suspend fun markPlayed(episodeId: String) = episodeDao.markPlayed(episodeId)
 
-    suspend fun removeForPodcast(podcastId: Long) = episodeDao.deleteForPodcast(podcastId)
+    suspend fun removeForPodcast(podcastId: Long) {
+        deleteLocalFiles(episodeDao.getForPodcast(podcastId))
+        episodeDao.deleteForPodcast(podcastId)
+    }
+
+    private fun deleteLocalFiles(entities: List<EpisodeEntity>) {
+        entities.forEach { entity ->
+            entity.localFilePath?.let { path ->
+                runCatching { File(path).delete() }
+                    .onFailure { e -> Log.w(TAG, "Failed to delete downloaded file at $path", e) }
+            }
+        }
+    }
 }
 
 private fun RssItem.toEntityOrNull(podcast: Podcast, cutoff: Instant): EpisodeEntity? {
