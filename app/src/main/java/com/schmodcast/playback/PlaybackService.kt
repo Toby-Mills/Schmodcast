@@ -7,6 +7,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
@@ -70,6 +71,10 @@ class PlaybackService : MediaLibraryService() {
             )
             .setHandleAudioBecomingNoisy(true)
             .build()
+        // Restore whatever speed was last saved (see onPlaybackParametersChanged below) so a
+        // fresh ExoPlayer instance - a new process, or the service restarting - doesn't silently
+        // reset the user's chosen speed back to 1x.
+        player.setPlaybackSpeed(playbackStateStore.playbackSpeed)
 
         player.addListener(object : Player.Listener {
             // Only the very last item in the timeline ends this way - finishing any
@@ -137,6 +142,15 @@ class PlaybackService : MediaLibraryService() {
                     stopPositionSaveTicker()
                     savePosition()
                 }
+            }
+
+            // Fires regardless of which surface changed the speed - the phone UI's
+            // SpeedCycleButton (via MediaController.setPlaybackSpeed, forwarded here as the
+            // underlying player) or Android Auto's CUSTOM_COMMAND_CYCLE_SPEED (which calls
+            // player.setPlaybackSpeed directly) - so persisting it here covers both without
+            // needing a save call at each call site.
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                playbackStateStore.playbackSpeed = playbackParameters.speed
             }
 
             // Catches seeks regardless of source (skip buttons, slider drags, or the
