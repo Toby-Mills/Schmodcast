@@ -703,17 +703,23 @@ private fun UpNextRow(
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(48.dp)
+                .align(Alignment.Top)
                 .clip(RoundedCornerShape(8.dp)),
         )
         Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = episode.podcastTitle,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+            )
             Text(
                 text = episode.title,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (isSelected) FontWeight.Bold else null,
                 color = if (isSelected) SchmodcastTeal else Color.Unspecified,
-                maxLines = 1,
+                maxLines = 2,
             )
-            Text(text = episode.podcastTitle, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
         }
         if (isSelected) {
             Icon(
