@@ -13,6 +13,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -61,6 +62,16 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        // The default small icon (media3_notification_small_icon, a generic play-arrow glyph)
+        // isn't this app's own brand - swap in a hand-drawn Schmodcast glyph instead. Android
+        // renders notification small icons using only their alpha channel (the OS applies its
+        // own tint), so ic_notification's actual fillColor is irrelevant, same as the other
+        // hand-drawn vectors in this app (ic_skip_back, ic_pause, etc).
+        setMediaNotificationProvider(
+            DefaultMediaNotificationProvider.Builder(this).build().apply {
+                setSmallIcon(R.drawable.ic_notification)
+            },
+        )
         episodeRepository = episodeRepository()
         playbackStateStore = playbackStateStore()
 
