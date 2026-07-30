@@ -28,6 +28,10 @@ data class ItunesPodcastDto(
     @SerialName("collectionName") val collectionName: String? = null,
     @SerialName("artistName") val artistName: String? = null,
     @SerialName("artworkUrl100") val artworkUrl100: String? = null,
+    // The Search API also returns a 600x600 artwork URL alongside the 100x100 one; the
+    // 100x100 thumbnail looked fine in the app's own small Compose thumbnails but was
+    // visibly blurry once upscaled onto Android Auto's much larger head-unit art tiles.
+    @SerialName("artworkUrl600") val artworkUrl600: String? = null,
     @SerialName("feedUrl") val feedUrl: String? = null,
 )
 
@@ -39,7 +43,7 @@ fun ItunesPodcastDto.toDomainOrNull(): Podcast? {
         id = collectionId,
         title = collectionName ?: "Untitled podcast",
         author = artistName ?: "Unknown",
-        artworkUrl = artworkUrl100.orEmpty(),
+        artworkUrl = artworkUrl600 ?: artworkUrl100.orEmpty(),
         feedUrl = feed,
     )
 }

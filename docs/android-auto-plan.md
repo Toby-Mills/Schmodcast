@@ -15,8 +15,8 @@ declaration, and (discovered only through real on-device/DHU testing, not in the
 original plan below) making ExoPlayer's own timeline carry the whole queue instead of
 one episode at a time.
 
-**Status: steps 1–4.5 done** (with real design changes along the way — see "What actually
-happened" under each step, and "Findings" at the end). Steps 5–8 not started. Step 4's
+**Status: steps 1–5 done** (with real design changes along the way — see "What actually
+happened" under each step, and "Findings" at the end). Steps 6–8 not started/pending. Step 4's
 custom actions are confirmed working end-to-end via a real DHU pass (all three tapped
 through the actual DHU window, verified via `dumpsys media_session` before/after each tap).
 Their icons, however, are a platform-enforced limitation, not a bug: root-caused via direct
@@ -257,13 +257,42 @@ different approach than the screenshot technique used elsewhere in this doc:**
   `onPlayerCommandRequest` has no reason to interact with, since it only gates
   controller-*requested* commands).
 
-### 5. Make episode artwork resolvable by the head unit — not started
+### 5. Make episode artwork resolvable by the head unit — done
 
-Confirm episode artwork URLs (from the RSS feed / iTunes search metadata) are plain
-`http(s)` URIs Media3/Auto can load directly via `MediaMetadata.artworkUri`. Not verified
-either way yet — worth checking with DHU once step 4 is done, since the Queue/Now Playing
-screens already render *some* artwork (the Now Playing card showed the podcast artwork
-correctly in testing so far), but a systematic check across feeds hasn't been done.
+Confirmed `episode.podcastArtworkUrl` is always a plain, directly resolvable `http(s)` URI
+(guarded by an `isNotBlank()` check before `PlaybackService.episodeMetadata()` calls
+`setArtworkUri(...)`) — resolvability itself was never actually broken.
+
+**What actually happened:** the real issue, caught by the app owner testing artwork on a
+real head unit rather than by anything in this checklist, was resolution, not
+resolvability. `ItunesSearchApi.kt`'s `ItunesPodcastDto` only captured the iTunes Search
+API's `artworkUrl100` field — literally a 100x100px thumbnail URL — and copied it verbatim
+into `Podcast.artworkUrl`, from which every subscribed episode's `podcastArtworkUrl`
+(`EpisodeRepository.kt`'s `RssItem.toEntityOrNull`) and every UI surface (`AsyncImage` in
+`QueueScreen`/`SearchScreen`/`LibraryScreen`) all draw the identical string — there is no
+separate higher-res copy anywhere. Coil happily downscales that 100x100 source into the
+app's own small (48-180dp) Compose thumbnails without it looking obviously bad, but Android
+Auto's head-unit art tiles render much larger, upscaling the same source into a visibly
+blurry result.
+
+Fixed by adding `artworkUrl600` (the Search API returns this alongside `artworkUrl100` for
+every podcast) to `ItunesPodcastDto` and preferring it in `toDomainOrNull()`, falling back to
+`artworkUrl100` only if it's ever missing. This is a single point-of-truth fix — every
+episode/UI surface downstream already reads the same `Podcast.artworkUrl`/
+`Episode.podcastArtworkUrl` field, so nothing else needed to change.
+
+**Known limitation, not fixed here:** this only improves artwork for *newly* subscribed
+podcasts (or podcasts re-subscribed after this change) — `PodcastEntity.artworkUrl` is
+written once at subscribe time and nothing re-fetches it from iTunes afterward, so podcasts
+already subscribed before this fix keep their stored 100x100 URL until unsubscribed and
+re-subscribed. Consistent with this being a pre-release app where local data is already
+treated as disposable (see `CLAUDE.md`'s Room/`fallbackToDestructiveMigration` note) rather
+than something requiring a backfill migration.
+
+Separately, `RssFeedParser` still doesn't parse any `<itunes:image>`/channel `<image><url>`
+tag from the feed itself (confirmed: no image handling exists in it at all), so there's no
+fallback to a podcast's own feed-provided artwork (often larger than even iTunes's 600x600)
+either — out of scope for this step, noted here in case artwork quality comes up again.
 
 ### 6. Playback resumption — mostly covered by 3.5, worth a final check
 
