@@ -1,6 +1,8 @@
 package com.schmodcast
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,10 +28,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -41,6 +46,7 @@ import com.schmodcast.ui.nav.Destination
 import com.schmodcast.ui.queue.QueueScreen
 import com.schmodcast.ui.theme.SchmodcastNavy
 import com.schmodcast.ui.theme.SchmodcastTheme
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
@@ -73,6 +79,11 @@ fun SchmodcastApp() {
         topBar = {
             TopAppBar(
                 title = {
+                    val context = LocalContext.current
+                    val titleBitmap = remember {
+                        val source = BitmapFactory.decodeResource(context.resources, R.drawable.schmodcast_title)
+                        keyOutNearNavy(source).asImageBitmap()
+                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -84,7 +95,11 @@ fun SchmodcastApp() {
                                 .size(32.dp)
                                 .clip(RoundedCornerShape(8.dp)),
                         )
-                        Text("Schmodcast", color = Color.White)
+                        Image(
+                            bitmap = titleBitmap,
+                            contentDescription = "Schmodcast",
+                            modifier = Modifier.height(32.dp),
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SchmodcastNavy),
@@ -120,4 +135,30 @@ fun SchmodcastApp() {
             composable(Destination.Library.route) { LibraryScreen() }
         }
     }
+}
+
+// schmodcast_title.png ships as an opaque RGB PNG whose background is a navy close to, but not
+// exactly, SchmodcastNavy (the TopAppBar's own containerColor) — placing the two side by side
+// showed a faint rectangular seam. Keying the background out to transparent (same approach as
+// keyOutNearWhite in QueueScreen.kt for the tiled logo) lets the app bar's own fill show through
+// instead.
+private fun keyOutNearNavy(source: Bitmap): Bitmap {
+    val bitmap = source.copy(Bitmap.Config.ARGB_8888, true)
+    val pixels = IntArray(bitmap.width * bitmap.height)
+    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    for (i in pixels.indices) {
+        val pixel = pixels[i]
+        val r = (pixel shr 16) and 0xFF
+        val g = (pixel shr 8) and 0xFF
+        val b = pixel and 0xFF
+        val dr = r - 0
+        val dg = g - 29
+        val db = b - 55
+        val distance = sqrt((dr * dr + dg * dg + db * db).toDouble())
+        if (distance < 45) {
+            pixels[i] = 0
+        }
+    }
+    bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    return bitmap
 }
