@@ -40,7 +40,9 @@ import com.schmodcast.R
 import com.schmodcast.data.model.Podcast
 import com.schmodcast.episodeRepository
 import com.schmodcast.subscriptionsRepository
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun LibraryScreen() {
@@ -84,8 +86,16 @@ fun LibraryScreen() {
                 TextButton(onClick = {
                     pendingUnsubscribe = null
                     scope.launch {
-                        repository.toggleSubscription(podcastToUnsubscribe)
-                        episodeRepository.removeForPodcast(podcastToUnsubscribe.id)
+                        // NonCancellable: this screen's composable - and this rememberCoroutineScope
+                        // along with it - is disposed the moment the user switches bottom-nav tabs,
+                        // which naturally happens right after confirming (e.g. flipping to Queue to
+                        // check the episodes are gone). Without this, a tab switch mid-flight could
+                        // cancel the work between the two calls, unsubscribing the podcast but
+                        // leaving its episodes stuck in the queue forever.
+                        withContext(NonCancellable) {
+                            repository.toggleSubscription(podcastToUnsubscribe)
+                            episodeRepository.removeForPodcast(podcastToUnsubscribe.id)
+                        }
                     }
                 }) {
                     Text("Unsubscribe")

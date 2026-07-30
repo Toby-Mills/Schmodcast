@@ -36,7 +36,9 @@ import coil3.compose.AsyncImage
 import com.schmodcast.data.model.Podcast
 import com.schmodcast.episodeRepository
 import com.schmodcast.subscriptionsRepository
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SearchScreen(viewModel: SearchViewModel = viewModel()) {
@@ -97,11 +99,19 @@ fun SearchScreen(viewModel: SearchViewModel = viewModel()) {
                                     isSubscribed = podcast.id in subscribedIds,
                                     onToggleSubscribe = {
                                         scope.launch {
-                                            val nowSubscribed = repository.toggleSubscription(podcast)
-                                            if (nowSubscribed) {
-                                                episodeRepository.refreshFeed(podcast)
-                                            } else {
-                                                episodeRepository.removeForPodcast(podcast.id)
+                                            // NonCancellable: switching tabs right after tapping
+                                            // subscribe/unsubscribe disposes this screen's composable
+                                            // (and this rememberCoroutineScope with it) - without this,
+                                            // that could cancel the work partway through, e.g.
+                                            // unsubscribing the podcast but leaving its episodes
+                                            // stuck in the queue (see LibraryScreen's identical fix).
+                                            withContext(NonCancellable) {
+                                                val nowSubscribed = repository.toggleSubscription(podcast)
+                                                if (nowSubscribed) {
+                                                    episodeRepository.refreshFeed(podcast)
+                                                } else {
+                                                    episodeRepository.removeForPodcast(podcast.id)
+                                                }
                                             }
                                         }
                                     },
