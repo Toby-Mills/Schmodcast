@@ -12,10 +12,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -40,6 +44,7 @@ import com.schmodcast.R
 import com.schmodcast.data.model.Podcast
 import com.schmodcast.episodeRepository
 import com.schmodcast.subscriptionsRepository
+import com.schmodcast.ui.search.SearchDialog
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -52,28 +57,47 @@ fun LibraryScreen() {
     val scope = rememberCoroutineScope()
     val subscriptions by repository.subscriptions.collectAsStateWithLifecycle(initialValue = emptyList())
     var pendingUnsubscribe by remember { mutableStateOf<Podcast?>(null) }
+    var showSearchDialog by remember { mutableStateOf(false) }
 
-    if (subscriptions.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                text = "No subscriptions yet.\nFind a show in Search to get started.",
-                style = MaterialTheme.typography.bodyLarge,
-            )
-        }
-    } else {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            items(subscriptions, key = { it.id }) { podcast ->
-                SwipeToUnsubscribeRow(
-                    podcast = podcast,
-                    onUnsubscribeRequest = { pendingUnsubscribe = podcast },
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showSearchDialog = true }) {
+                Icon(imageVector = Icons.Filled.Add, contentDescription = "Add podcast")
+            }
+        },
+    ) { innerPadding ->
+        if (subscriptions.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "No subscriptions yet.\nTap + to add a show.",
+                    style = MaterialTheme.typography.bodyLarge,
                 )
             }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(subscriptions, key = { it.id }) { podcast ->
+                    SwipeToUnsubscribeRow(
+                        podcast = podcast,
+                        onUnsubscribeRequest = { pendingUnsubscribe = podcast },
+                    )
+                }
+            }
         }
+    }
+
+    if (showSearchDialog) {
+        SearchDialog(onDismissRequest = { showSearchDialog = false })
     }
 
     val podcastToUnsubscribe = pendingUnsubscribe

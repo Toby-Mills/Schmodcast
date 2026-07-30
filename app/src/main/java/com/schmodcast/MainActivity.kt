@@ -39,7 +39,6 @@ import androidx.navigation.compose.rememberNavController
 import com.schmodcast.ui.library.LibraryScreen
 import com.schmodcast.ui.nav.Destination
 import com.schmodcast.ui.queue.QueueScreen
-import com.schmodcast.ui.search.SearchScreen
 import com.schmodcast.ui.theme.SchmodcastNavy
 import com.schmodcast.ui.theme.SchmodcastTheme
 
@@ -119,7 +118,6 @@ fun SchmodcastApp() {
         ) {
             composable(Destination.Queue.route) { QueueScreen() }
             composable(Destination.Library.route) { LibraryScreen() }
-            composable(Destination.Search.route) { SearchScreen() }
         }
     }
 }
