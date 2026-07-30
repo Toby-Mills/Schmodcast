@@ -15,6 +15,7 @@ playback reverts to whatever is at the head of the queue.
   and Android Auto integration — ExoPlayer's own timeline holds the full queue (not just the
   current episode) so Auto's built-in Queue screen shows real upcoming episodes, and a
   two-level browse tree (Queue folder → episodes) is exposed for `MediaBrowser` clients
+- WorkManager for background queue refresh and proactive downloads (see Notes below)
 - Android Gradle Plugin 9.1.1 (built-in Kotlin support — no separate `kotlin-android` plugin)
 - Gradle 9.3.1
 - `minSdk` 26, `compileSdk`/`targetSdk` 37
@@ -51,6 +52,10 @@ playback reverts to whatever is at the head of the queue.
   (`android.media.browse.MediaBrowserService`) actions on its intent-filter — Android Auto
   binds via the legacy action for app discovery and gets a silent `SecurityException` if
   the service isn't exported.
+- The queue also refreshes on its own in the background: `QueueRefreshWorker` runs hourly on
+  any network connection, and on finishing kicks off `EpisodeDownloadWorker`, which only runs
+  on WiFi (`NetworkType.UNMETERED`) and pre-downloads the next 3 unplayed, undownloaded
+  episodes so they're ready offline.
 - No automated tests yet.
 
 ## Keeping this current

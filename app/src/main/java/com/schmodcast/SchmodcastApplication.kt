@@ -9,8 +9,14 @@ import com.schmodcast.data.SubscriptionsRepository
 import com.schmodcast.data.download.EpisodeDownloadManager
 import com.schmodcast.data.local.SchmodcastDatabase
 import com.schmodcast.data.remote.NetworkModule
+import com.schmodcast.data.work.QueueRefreshWorker
 
 class SchmodcastApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        QueueRefreshWorker.schedule(this)
+    }
+
     private val database: SchmodcastDatabase by lazy {
         Room.databaseBuilder(this, SchmodcastDatabase::class.java, "schmodcast.db")
             // Pre-release app, no installs to preserve across schema changes yet.

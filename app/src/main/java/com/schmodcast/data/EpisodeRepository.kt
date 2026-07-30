@@ -72,6 +72,9 @@ class EpisodeRepository(
         episodeDao.deleteOlderThan(cutoff)
     }
 
+    suspend fun nextUndownloaded(limit: Int): List<Episode> =
+        episodeDao.getUndownloaded(limit).map { it.toDomain() }
+
     suspend fun markPlayed(episodeId: String) = episodeDao.markPlayed(episodeId)
 
     suspend fun updatePosition(episodeId: String, positionMs: Long) = episodeDao.updatePosition(episodeId, positionMs)
