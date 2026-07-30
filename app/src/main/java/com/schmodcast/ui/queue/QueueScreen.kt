@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -227,6 +228,7 @@ private fun NowPlayingCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(cardHeight),
+                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
             ) {
                 // The handle lives outside the Card (below), not nested inside either branch here,
                 // for two reasons: (1) it stays mounted across the content swap that happens when
@@ -278,7 +280,10 @@ private fun NowPlayingCard(
 // combined), used both as the anchor for the collapsed end of the drag range and as the fixed
 // total height at rest — the height is always explicit now (see onHandleDrag comment above), so
 // this can no longer be sidestepped by falling back to true wrap-content sizing at progress == 0.
-private val COLLAPSED_PLAYER_HEIGHT = 200.dp
+// 200.dp was too tight for the artwork row plus the slider and its timestamp row beneath it,
+// clipping the timestamps; 240.dp gives them room without touching expandedHeight (still maxHeight
+// * 0.8f), so the drag range just narrows slightly instead of the card growing into new screen space.
+private val COLLAPSED_PLAYER_HEIGHT = 240.dp
 
 // The handle's reserved row: the 4dp pill plus its 8dp top/bottom padding. Subtracted from the
 // interpolated total height to get the Card's own height, since the handle now sits below the
