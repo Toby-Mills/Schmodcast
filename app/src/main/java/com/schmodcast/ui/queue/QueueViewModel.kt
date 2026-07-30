@@ -92,8 +92,14 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
         val future = MediaController.Builder(context, sessionToken).buildAsync()
         future.addListener(
             {
-                controller = future.get().also { it.addListener(playerListener) }
+                val c = future.get().also { it.addListener(playerListener) }
+                controller = c
                 syncStateFromController()
+                // onIsPlayingChanged (the ticker's only other trigger) fires on a *change*, so it
+                // never runs here if playback was already underway before this controller
+                // connected (e.g. reopening the app onto a background session) — without this, the
+                // position would be read once at connect time and then never again.
+                if (c.isPlaying) startPositionTicker()
             },
             MoreExecutors.directExecutor(),
         )
