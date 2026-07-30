@@ -204,6 +204,20 @@ class PlaybackService : MediaLibraryService() {
         serviceScope.launch { episodeRepository.updatePosition(episodeId, positionMs) }
     }
 
+    // Shared by the CUSTOM_COMMAND_SKIP_BACK/_FORWARD session commands (Auto's custom action
+    // buttons) and sessionCallback.onPlayerCommandRequest (hardware media buttons - steering
+    // wheel, Bluetooth headset, wired remote), so both surfaces skip by the same amount via the
+    // same code, the same way PlaybackTuning.kt keeps this in sync with the phone UI's own
+    // skip buttons.
+    private fun skipBack() {
+        player.seekTo((player.currentPosition - SKIP_BACK_MS).coerceAtLeast(0L))
+    }
+
+    private fun skipForward() {
+        val duration = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+        player.seekTo((player.currentPosition + SKIP_FORWARD_MS).coerceAtMost(duration))
+    }
+
     private fun loadEpisode(episode: Episode, autoPlay: Boolean) {
         currentEpisodeId = episode.id
         playbackStateStore.currentEpisodeId = episode.id
@@ -317,6 +331,44 @@ class PlaybackService : MediaLibraryService() {
                 .build()
         }
 
+        // Hardware transport buttons - a car's steering wheel, a Bluetooth headset, a wired
+        // remote - send standard KEYCODE_MEDIA_NEXT/PREVIOUS, which Media3 translates into
+        // COMMAND_SEEK_TO_NEXT/PREVIOUS (its "smart" skip-to-adjacent-item commands). Those are a
+        // completely separate path from the CUSTOM_COMMAND_SKIP_BACK/_FORWARD custom actions
+        // above - custom SessionCommands only exist for Auto's own touch UI, hardware buttons
+        // have no way to reach them. Left alone, next/previous would jump to the next/previous
+        // *episode* (ExoPlayer's timeline holds the whole queue), which isn't what a physical
+        // button press while driving should risk doing - so both commands are intercepted here
+        // and redirected to the same ±30s/2min skip the custom actions perform, and blocked
+        // (RESULT_INFO_SKIPPED) so ExoPlayer's own default next/previous-item handling never
+        // runs. This affects every hardware/remote surface, not just Android Auto - the phone's
+        // own lock-screen/notification transport controls and any Bluetooth device's
+        // next/previous buttons go through this same command, by design (a physical button
+        // shouldn't behave differently depending on which app surface issued it).
+        //
+        // onPlayerCommandRequest is deprecated in media3-session 1.10.1 with no replacement that
+        // still supports intercepting-and-substituting a command (onPlayerInteractionFinished
+        // only fires after the default behavior already ran) - suppressed deliberately, not an
+        // oversight.
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+        override fun onPlayerCommandRequest(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            playerCommand: Int,
+        ): Int {
+            return when (playerCommand) {
+                Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
+                    skipForward()
+                    SessionResult.RESULT_INFO_SKIPPED
+                }
+                Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
+                    skipBack()
+                    SessionResult.RESULT_INFO_SKIPPED
+                }
+                else -> super.onPlayerCommandRequest(session, controller, playerCommand)
+            }
+        }
+
         override fun onCustomCommand(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -333,12 +385,11 @@ class PlaybackService : MediaLibraryService() {
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 CUSTOM_COMMAND_SKIP_BACK -> {
-                    player.seekTo((player.currentPosition - SKIP_BACK_MS).coerceAtLeast(0L))
+                    skipBack()
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 CUSTOM_COMMAND_SKIP_FORWARD -> {
-                    val duration = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
-                    player.seekTo((player.currentPosition + SKIP_FORWARD_MS).coerceAtMost(duration))
+                    skipForward()
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 CUSTOM_COMMAND_CYCLE_SPEED -> {

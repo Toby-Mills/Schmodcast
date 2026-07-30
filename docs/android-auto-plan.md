@@ -15,14 +15,17 @@ declaration, and (discovered only through real on-device/DHU testing, not in the
 original plan below) making ExoPlayer's own timeline carry the whole queue instead of
 one episode at a time.
 
-**Status: steps 1–4 done** (with real design changes along the way — see "What actually
+**Status: steps 1–4.5 done** (with real design changes along the way — see "What actually
 happened" under each step, and "Findings" at the end). Steps 5–8 not started. Step 4's
 custom actions are confirmed working end-to-end via a real DHU pass (all three tapped
 through the actual DHU window, verified via `dumpsys media_session` before/after each tap).
 Their icons, however, are a platform-enforced limitation, not a bug: root-caused via direct
 experimentation (see step 4) that Android Auto substitutes its own canonical icon per
 `CommandButton` slot regardless of what drawable the app supplies — accepted as a known,
-unfixable-within-this-API constraint rather than worked around.
+unfixable-within-this-API constraint rather than worked around. Step 4.5 (not in the original
+plan) makes hardware transport buttons — steering wheel, Bluetooth, wired remote — skip
+±2min/30s within the episode instead of jumping to a different one, confirmed on a real device
+via `adb shell cmd media_session dispatch`.
 
 ## Steps
 
@@ -201,6 +204,59 @@ that was deliberately left as-is rather than worked around.
      option, deliberately not pursued for now; revisit if a genuinely custom/numeral-bearing Auto
      icon becomes a priority.
 
+### 4.5. Make hardware transport buttons (steering wheel, Bluetooth, wired remote) skip within the episode — done (not in the original plan)
+
+Prompted by a direct question during step 4's aftermath: does the slot system used for Auto's
+touch UI have anything to do with a car's physical steering wheel buttons? It doesn't — they're
+two completely separate input paths. Steering wheel/Bluetooth/wired-remote button presses send
+standard Android media-key events, which Media3 translates into `Player.COMMAND_SEEK_TO_NEXT`/
+`_PREVIOUS` and dispatches directly to the player, with no way to reach any of `PlaybackService`'s
+custom `SessionCommand`s (`CUSTOM_COMMAND_SKIP_BACK`/etc.) — those only exist for touch UI (the
+phone app, Auto's Now Playing screen).
+
+Left alone, since ExoPlayer's timeline holds the whole queue (see Playback in `CLAUDE.md`),
+`COMMAND_SEEK_TO_NEXT`/`_PREVIOUS` would jump to the next/previous *episode* — not an obviously
+wrong choice (it matches the app's whole "one continuous queue" model), but explicitly **not**
+what was wanted here: jumping to a different episode via a physical button while driving was
+judged too risky/surprising, in favor of matching what many podcast apps do physically instead —
+skip forward/back *within* the current episode.
+
+Implemented via `MediaSession.Callback.onPlayerCommandRequest` — a gate hook, confirmed by
+decompiling `MediaSessionImpl`/`MediaSessionStub`'s bytecode before relying on it, given how
+`onCustomCommand` had already tripped Claude Code up on assumed-vs-actual Media3 semantics once
+this session: returning `SessionResult.RESULT_SUCCESS` lets the requested player command proceed
+as normal; any other code blocks it from ever reaching the actual `Player` call. `PlaybackService`
+intercepts `COMMAND_SEEK_TO_NEXT`/`_PREVIOUS` (and their `_MEDIA_ITEM` variants) here, calls the
+same `skipForward()`/`skipBack()` (±2min/30s) the custom actions already use, and returns
+`RESULT_INFO_SKIPPED` to block ExoPlayer's own default handling. `onPlayerCommandRequest` is
+itself deprecated in media3-session 1.10.1 with no non-deprecated replacement that still supports
+intercept-and-substitute (`onPlayerInteractionFinished` only fires *after* the default behavior
+already ran) — suppressed deliberately at the call site, not an oversight.
+
+**Verification, on a real device — DHU can't simulate a steering wheel at all, so this needed a
+different approach than the screenshot technique used elsewhere in this doc:**
+- `adb shell input keyevent 87` (`KEYCODE_MEDIA_NEXT`) was tried first and did *nothing* — no
+  position change, no `dumpsys` timestamp change. Root cause: `input keyevent` injects into
+  whatever window currently has UI focus, which is an entirely different path from real
+  media-button dispatch (`AudioManager`/`MediaSessionManager` routing to the current top-priority
+  session) — it is **not** a valid way to simulate a hardware media button on Android, despite
+  looking like it should be.
+- `adb shell cmd media_session dispatch next`/`previous` is the actual dispatch path, confirmed via
+  `adb shell cmd media_session list-sessions` (shows session priority order) and `dumpsys
+  media_session`'s `updated` timestamp. Dispatch initially still did nothing, because Schmodcast's
+  session was `PAUSED` and ranked *below* another installed app's session in priority — media-button
+  dispatch always goes to the current top session, with no way to target a specific package.
+  Starting real playback in the app (a tap on its own Play button, via `adb shell input tap` at
+  coordinates read off an `adb exec-out screencap` of the actual phone screen — not DHU) brought
+  Schmodcast to the top of `list-sessions`, after which dispatch worked immediately.
+- With that fixed, `dispatch next` moved `position` forward by exactly 120000ms and `dispatch
+  previous` moved it back by exactly 30000ms (both confirmed via tight before/after `dumpsys`
+  snapshots), with `active item id` unchanged both times — confirming the interception works
+  exactly as intended, without touching the natural end-of-episode auto-advance path (a separate,
+  player-internal state transition — see `onMediaItemTransition` in `CLAUDE.md` — that
+  `onPlayerCommandRequest` has no reason to interact with, since it only gates
+  controller-*requested* commands).
+
 ### 5. Make episode artwork resolvable by the head unit — not started
 
 Confirm episode artwork URLs (from the RSS feed / iTunes search metadata) are plain
@@ -224,7 +280,7 @@ emission arrives) that isn't already handled.
 `CLAUDE.md` (Playback + a new Android Auto section) and `README.md` updated in the same
 change that landed the 3.5 rework, per this repo's "keep docs current" convention.
 
-### 8. Testing — DHU set up and used throughout steps 1–4; full pass still pending
+### 8. Testing — DHU set up and used throughout steps 1–4.5; full pass still pending
 
 Desktop Head Unit installed via Android Studio's SDK Manager
 (`extras/google/auto/desktop-head-unit.exe`), driven against a real connected Pixel 10 (no
@@ -275,6 +331,16 @@ emulator). Real gotchas hit along the way, worth knowing for next time:
   how step 4's three custom actions got confirmed end-to-end (tap in the real DHU window →
   `dumpsys` before/after showing the position/label actually changed) without a person
   needing to look at anything.
+- **Neither DHU nor `adb shell input keyevent` can test hardware transport button behavior** —
+  DHU has no steering wheel simulation at all, and `input keyevent` injects into whatever window
+  currently has UI focus, which is a completely different path from real media-button dispatch
+  and does nothing to a `MediaSession` (confirmed: `KEYCODE_MEDIA_NEXT` via `input keyevent`
+  produced no position change and no `dumpsys` timestamp change). The actual dispatch path is
+  `adb shell cmd media_session dispatch next`/`previous`/`play`/`pause`/etc. — but it always
+  routes to whichever session currently ranks highest in `adb shell cmd media_session
+  list-sessions`, with no way to target a specific package, so the app under test needs to
+  actually be playing (not just launched) before dispatch will reach it. See step 4.5 for how
+  this caught the hardware-button skip behavior working correctly.
 
 Still pending: a full pass once steps 5–6 land (artwork, resumption
 edge cases), plus actually exercising the `MediaLibraryService` browse tree through some
