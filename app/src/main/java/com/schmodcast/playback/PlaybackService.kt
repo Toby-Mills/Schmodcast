@@ -1,5 +1,7 @@
 package com.schmodcast.playback
 
+import android.app.PendingIntent
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.core.net.toUri
@@ -19,6 +21,7 @@ import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.schmodcast.MainActivity
 import com.schmodcast.R
 import com.schmodcast.data.EpisodeRepository
 import com.schmodcast.data.PlaybackStateStore
@@ -165,7 +168,19 @@ class PlaybackService : MediaLibraryService() {
             }
         })
 
-        mediaSession = MediaLibrarySession.Builder(this, player, sessionCallback).build()
+        // Lets tapping the persistent playback notification (or the lock-screen/Auto now-playing
+        // surfaces backed by this same session) reopen the app rather than doing nothing -
+        // MainActivity is singleTask (see manifest) so this resumes the existing instance instead
+        // of stacking a duplicate on top of whatever task the notification tap came from.
+        val sessionActivity = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        mediaSession = MediaLibrarySession.Builder(this, player, sessionCallback)
+            .setSessionActivity(sessionActivity)
+            .build()
 
         serviceScope.launch {
             episodeRepository.queue.collect { episodes ->
