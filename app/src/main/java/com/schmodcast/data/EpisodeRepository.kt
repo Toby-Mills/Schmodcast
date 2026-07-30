@@ -43,13 +43,15 @@ class EpisodeRepository(
                 val candidates = items.mapNotNull { it.toEntityOrNull(podcast, cutoff) }
                 Log.d(TAG, "'${podcast.title}': parsed ${items.size} item(s), ${candidates.size} within window")
                 if (candidates.isNotEmpty()) {
-                    // Preserve download state and playback position: insertAll REPLACEs by id,
-                    // which would otherwise wipe out localFilePath/lastPositionMs for episodes
-                    // already downloaded or in-progress on every refresh.
+                    // Preserve download state, playback position, and played status: insertAll
+                    // REPLACEs by id, which would otherwise wipe out localFilePath/lastPositionMs/
+                    // played for episodes already downloaded, in-progress, or finished on every
+                    // refresh (and a played episode can easily still be within QUEUE_WINDOW).
                     val existingById = episodeDao.getByIds(candidates.map { it.id }).associateBy { it.id }
                     val entities = candidates.map { candidate ->
                         val existing = existingById[candidate.id]
                         candidate.copy(
+                            played = existing?.played ?: false,
                             localFilePath = existing?.localFilePath,
                             lastPositionMs = existing?.lastPositionMs ?: 0L,
                         )
