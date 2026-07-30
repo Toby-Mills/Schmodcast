@@ -9,6 +9,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -17,6 +18,7 @@ import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.schmodcast.R
 import com.schmodcast.data.EpisodeRepository
 import com.schmodcast.data.PlaybackStateStore
 import com.schmodcast.data.model.Episode
@@ -274,12 +276,45 @@ class PlaybackService : MediaLibraryService() {
     // it naturally finishes, ExoPlayer's own auto-advance (see onMediaItemTransition) resumes
     // playing whatever is at the head - no special-casing needed.
     private val sessionCallback = object : MediaLibrarySession.Callback {
+        // Custom layout buttons show up as Android Auto's now-playing custom action slots (the
+        // phone UI's own transport row is Compose, not this - see QueueScreen's TransportButton/
+        // SpeedCycleButton). Rebuilt (not just built once at connect) because the speed button's
+        // label needs to reflect whatever speed is current, same as the phone UI's own
+        // SpeedCycleButton text.
+        private fun customLayout(): List<CommandButton> = listOf(
+            CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+                .setSessionCommand(SessionCommand(CUSTOM_COMMAND_SKIP_BACK, Bundle.EMPTY))
+                .setCustomIconResId(R.drawable.ic_skip_back)
+                .setDisplayName("Skip back 30 seconds")
+                .setSlots(CommandButton.SLOT_BACK)
+                .build(),
+            CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+                .setSessionCommand(SessionCommand(CUSTOM_COMMAND_SKIP_FORWARD, Bundle.EMPTY))
+                .setCustomIconResId(R.drawable.ic_skip_forward)
+                .setDisplayName("Skip forward 2 minutes")
+                .setSlots(CommandButton.SLOT_FORWARD)
+                .build(),
+            CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+                .setSessionCommand(SessionCommand(CUSTOM_COMMAND_CYCLE_SPEED, Bundle.EMPTY))
+                .setCustomIconResId(R.drawable.ic_speed)
+                .setDisplayName("${formatSpeedLabel(player.playbackParameters.speed)} speed")
+                .setSlots(CommandButton.SLOT_FORWARD_SECONDARY)
+                .build(),
+        )
+
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             val connectionResult = super.onConnect(session, controller)
             val sessionCommands = connectionResult.availableSessionCommands.buildUpon()
                 .add(SessionCommand(CUSTOM_COMMAND_PLAY_EPISODE, Bundle.EMPTY))
+                .add(SessionCommand(CUSTOM_COMMAND_SKIP_BACK, Bundle.EMPTY))
+                .add(SessionCommand(CUSTOM_COMMAND_SKIP_FORWARD, Bundle.EMPTY))
+                .add(SessionCommand(CUSTOM_COMMAND_CYCLE_SPEED, Bundle.EMPTY))
                 .build()
-            return MediaSession.ConnectionResult.accept(sessionCommands, connectionResult.availablePlayerCommands)
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(sessionCommands)
+                .setAvailablePlayerCommands(connectionResult.availablePlayerCommands)
+                .setCustomLayout(customLayout())
+                .build()
         }
 
         override fun onCustomCommand(
@@ -288,15 +323,33 @@ class PlaybackService : MediaLibraryService() {
             customCommand: SessionCommand,
             args: Bundle,
         ): ListenableFuture<SessionResult> {
-            if (customCommand.customAction == CUSTOM_COMMAND_PLAY_EPISODE) {
-                val episodeId = args.getString(EXTRA_EPISODE_ID)
-                val episode = latestQueue.find { it.id == episodeId }
-                if (episode != null) {
-                    loadEpisode(episode, autoPlay = false)
+            when (customCommand.customAction) {
+                CUSTOM_COMMAND_PLAY_EPISODE -> {
+                    val episodeId = args.getString(EXTRA_EPISODE_ID)
+                    val episode = latestQueue.find { it.id == episodeId }
+                    if (episode != null) {
+                        loadEpisode(episode, autoPlay = false)
+                    }
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
-                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                CUSTOM_COMMAND_SKIP_BACK -> {
+                    player.seekTo((player.currentPosition - SKIP_BACK_MS).coerceAtLeast(0L))
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                CUSTOM_COMMAND_SKIP_FORWARD -> {
+                    val duration = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+                    player.seekTo((player.currentPosition + SKIP_FORWARD_MS).coerceAtMost(duration))
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                CUSTOM_COMMAND_CYCLE_SPEED -> {
+                    player.setPlaybackSpeed(nextSpeed(player.playbackParameters.speed))
+                    // Only this button's label goes stale over time (skip/forward icons never
+                    // change), so only this command needs to push a refreshed layout.
+                    mediaSession?.setCustomLayout(customLayout())
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                else -> return super.onCustomCommand(session, controller, customCommand, args)
             }
-            return super.onCustomCommand(session, controller, customCommand, args)
         }
 
         // Android Auto (and any other MediaBrowser client) discovers content through this
@@ -413,6 +466,9 @@ class PlaybackService : MediaLibraryService() {
 
     companion object {
         const val CUSTOM_COMMAND_PLAY_EPISODE = "com.schmodcast.PLAY_EPISODE"
+        const val CUSTOM_COMMAND_SKIP_BACK = "com.schmodcast.SKIP_BACK"
+        const val CUSTOM_COMMAND_SKIP_FORWARD = "com.schmodcast.SKIP_FORWARD"
+        const val CUSTOM_COMMAND_CYCLE_SPEED = "com.schmodcast.CYCLE_SPEED"
         const val EXTRA_EPISODE_ID = "episodeId"
         private const val ROOT_ID = "root"
         private const val QUEUE_FOLDER_ID = "queue_root"

@@ -15,8 +15,14 @@ declaration, and (discovered only through real on-device/DHU testing, not in the
 original plan below) making ExoPlayer's own timeline carry the whole queue instead of
 one episode at a time.
 
-**Status: steps 1–3 done** (with real design changes along the way — see "What actually
-happened" under each step, and "Findings" at the end). Steps 4–8 not started.
+**Status: steps 1–4 done** (with real design changes along the way — see "What actually
+happened" under each step, and "Findings" at the end). Steps 5–8 not started. Step 4's
+custom actions are confirmed working end-to-end via a real DHU pass (all three tapped
+through the actual DHU window, verified via `dumpsys media_session` before/after each tap).
+Their icons, however, are a platform-enforced limitation, not a bug: root-caused via direct
+experimentation (see step 4) that Android Auto substitutes its own canonical icon per
+`CommandButton` slot regardless of what drawable the app supplies — accepted as a known,
+unfixable-within-this-API constraint rather than worked around.
 
 ## Steps
 
@@ -102,20 +108,98 @@ This traded away a subtlety and required two follow-up fixes, both landed:
 See `CLAUDE.md`'s Playback and Android Auto sections for the settled description of all
 of this.
 
-### 4. Expose the expanded-player actions as custom session commands with icons — not started
+### 4. Expose the expanded-player actions as custom session commands with icons — done; icons are a confirmed platform limitation, not fixed
 
 Auto's now-playing screen only shows a handful of custom action slots, each requiring an
-icon resource, not a Compose button. Skip ±30s/+2min and the speed-cycle button need
-equivalent `SessionCommand`s declared in `onConnect` and advertised as custom layout
-`CommandButton`s with `setIconResId(...)`. See the original plan notes below (unchanged
-from first draft — nothing about this has been attempted yet):
+icon resource, not a Compose button. Skip ±30s/+2min and the speed-cycle button are now
+equivalent `SessionCommand`s (`CUSTOM_COMMAND_SKIP_BACK`/`_SKIP_FORWARD`/`_CYCLE_SPEED`)
+declared in `onConnect` and advertised as a custom layout of `CommandButton`s, each built
+from this app's own `ic_skip_back`/`ic_skip_forward`/`ic_speed` vectors via
+`CommandButton.Builder(CommandButton.ICON_UNDEFINED).setCustomIconResId(...)` — see
+"What actually happened" for why those icons don't visually render as designed, and why
+that was deliberately left as-is rather than worked around.
 
-- Reuse whatever seek/speed logic already backs `QueueViewModel`'s transport calls — the
-  service-side seek/`setPlaybackSpeed` handling shouldn't need new logic, just a new
-  command surface that invokes it.
-- Mark-as-played can likely stay phone-only (it already bypasses the session entirely via
-  `episodeRepository.markPlayed(...)`) — decide whether Auto needs an equivalent action or
-  whether natural-completion auto-advance is sufficient in-car.
+- Reused the seek/speed logic, but not literally through `QueueViewModel`'s controller
+  calls (the service has direct `player` access, no controller indirection needed) —
+  extracted the actual shared bits (skip amounts, speed steps/cycling, speed label
+  formatting) into `playback/PlaybackTuning.kt` so `PlaybackService`'s command handlers and
+  `QueueViewModel`/`QueueScreen` both call the same functions instead of maintaining two
+  copies of "what does skip-forward mean" that could drift apart. `SPEED_OPTIONS` stayed at
+  its original `1/1.2/1.4/1.6/1.8/2x` — see point 4 below for why an earlier version of this
+  work changed it and then reverted that change.
+- Mark-as-played stayed phone-only, per the original guess above — it already bypasses the
+  session via `episodeRepository.markPlayed(...)`, and natural-completion auto-advance
+  covers the in-car case without a dedicated Auto action.
+- **What actually happened, in order:**
+  1. First attempt used `CommandButton.Builder(CommandButton.ICON_UNDEFINED).setCustomIconResId(...)`,
+     reusing the phone UI's own `ic_skip_back`/`ic_skip_forward` vectors plus a new `ic_speed`
+     vector, on the assumption that a custom app-drawn icon would just work the way notification
+     custom actions always have. Media3 1.10.1 turned out to have a richer `CommandButton` API
+     than the plan assumed either way — predefined icon constants
+     (`CommandButton.ICON_SKIP_BACK_30`, `ICON_PLAYBACK_SPEED_1_5`, etc.) and a slot system
+     (`SLOT_BACK`/`SLOT_FORWARD`/`SLOT_FORWARD_SECONDARY`/...) instead of a flat list.
+     `setIconResId(...)` (the method this plan originally named) turned out to be deprecated in
+     favor of `setCustomIconResId(...)`, and the bare `CommandButton.Builder()` constructor is
+     *also* deprecated in favor of `Builder(int icon)` — both confirmed by decompiling
+     `media3-session-1.10.1.aar` directly (`javap` against its `classes.jar`), since the
+     installed docs/samples didn't make either deprecation obvious.
+  2. A real DHU pass (see step 8's screenshot technique) confirmed the custom-icon buttons
+     *worked* — all three showed up, and tapping each one through the actual DHU window
+     correctly reached `onCustomCommand` (skip-back moved `position` back exactly 30000ms,
+     skip-forward moved it forward exactly 120000ms, cycling speed updated the custom action's
+     label from `1x speed` to `1.2x speed`, all confirmed via before/after `dumpsys
+     media_session` snapshots) — but the *icons* didn't render as designed. The speed button
+     showed as a generic concentric-circle "bullseye" instead of `ic_speed.xml`'s hand-drawn
+     gauge.
+  3. **First (wrong) diagnosis:** decompiling `MediaSessionLegacyStub.createPlaybackStateCompat(...)`
+     — the method that builds the `PlaybackStateCompat` Auto actually consumes — showed a
+     predefined icon constant gets its raw int stashed into the `CustomAction`'s extras under
+     `MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT`, while a custom resource id doesn't.
+     This looked like a plausible explanation (predefined constants get a recognition signal,
+     custom ones don't) and was acted on: switched all three buttons to predefined constants
+     (`ICON_SKIP_BACK_30`, generic `ICON_SKIP_FORWARD`, `ICON_PLAYBACK_SPEED_*`), which required
+     realigning `SPEED_OPTIONS` to `1/1.2/1.5/1.8/2x` to match Media3's numeral badge set — a
+     phone-visible product change made **without the app owner's sign-off**, straight after being
+     asked to keep the app's own icons and investigate rendering instead. That was wrong to do
+     unilaterally and was reverted in full once flagged, back to custom icons and the original
+     `1/1.2/1.4/1.6/1.8/2x` steps.
+  4. **Real root cause, found by direct experimentation, not more decompiling:** a real
+     third-party app (Pocket Casts) was confirmed — by the app owner, looking at the same DHU —
+     to render its own custom "Change speed" icon correctly, including live-updating to show the
+     current numeral (e.g. "1.4x"). That ruled out "custom icons can't cross-process load in this
+     DHU" as a category, meaning something about *our* setup specifically was the problem, not the
+     platform in general — so the `EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT` theory in point 3, while
+     real, wasn't actually the explanation for our failure. Zooming into the DHU screenshot at 6x
+     showed skip-back's icon rendering as genuinely asymmetric (open arc + arrowhead) — i.e. it
+     *was* loading our actual resource — while speed's icon was a perfectly symmetric ring+dot,
+     structurally impossible to be our own asymmetric arc+needle art at any resolution. Ruled out
+     hypotheses one at a time, each requiring only a rebuild/reinstall/re-screenshot: the pivot
+     dot's unusual double-arc path construction (removed it — no change); which slot the button
+     occupied (`SLOT_FORWARD_SECONDARY` vs `SLOT_OVERFLOW` vs `SLOT_BACK_SECONDARY` — all three
+     showed the identical bullseye). The decisive test: swapped which icon *file* sat in which
+     *slot* (`ic_speed`'s exact resource into `SLOT_FORWARD`, `ic_skip_forward`'s exact resource
+     into `SLOT_FORWARD_SECONDARY`) and re-screenshotted. The rendered icon followed the **slot**,
+     not the file, both directions — `ic_speed` rendered as a normal forward arrow in
+     `SLOT_FORWARD`, and `ic_skip_forward` rendered as the same bullseye in
+     `SLOT_FORWARD_SECONDARY`. Conclusion, fully evidenced: **Android Auto enforces its own
+     canonical icon per `CommandButton` slot, ignoring whatever drawable the app supplies** —
+     `SLOT_BACK`/`SLOT_FORWARD` always show a direction glyph (numbered if a matching predefined
+     constant like `ICON_SKIP_BACK_30` was declared, generic/unnumbered otherwise — still never
+     the app's own resource), every other slot tried always shows the same generic "adjust"
+     glyph. This is a platform-level constraint of Media3's `CommandButton`/slot abstraction, not
+     a bug in this app's icons, and not fixable by drawing better art. Pocket Casts' working
+     custom icon is almost certainly explained by *not* using Media3's `CommandButton`/slot system
+     at all — its `dumpsys` custom-action extras came back completely `null` (not even an empty
+     bundle), consistent with building `PlaybackStateCompat.CustomAction`s directly through the
+     older `MediaSessionCompat` API, which has no slot concept and no canonicalization to bypass.
+  5. **Decision:** left all three buttons on `CommandButton.ICON_UNDEFINED` with this app's own
+     custom resources — functionally correct (all three commands work end-to-end) and visually
+     consistent (all three show a platform-generic icon rather than mixing a numbered one, like
+     `ICON_SKIP_BACK_30`, with unnumbered ones that have no equivalent). Replicating Pocket Casts'
+     approach would mean building a parallel legacy `MediaSessionCompat` custom-action path
+     bypassing Media3's session/slot abstraction for this one row of buttons — a real architecture
+     option, deliberately not pursued for now; revisit if a genuinely custom/numeral-bearing Auto
+     icon becomes a priority.
 
 ### 5. Make episode artwork resolvable by the head unit — not started
 
@@ -140,7 +224,7 @@ emission arrives) that isn't already handled.
 `CLAUDE.md` (Playback + a new Android Auto section) and `README.md` updated in the same
 change that landed the 3.5 rework, per this repo's "keep docs current" convention.
 
-### 8. Testing — DHU set up and used throughout steps 1–3.5; full pass still pending
+### 8. Testing — DHU set up and used throughout steps 1–4; full pass still pending
 
 Desktop Head Unit installed via Android Studio's SDK Manager
 (`extras/google/auto/desktop-head-unit.exe`), driven against a real connected Pixel 10 (no
@@ -164,8 +248,35 @@ emulator). Real gotchas hit along the way, worth knowing for next time:
 - adb's device-`unauthorized` state and a stopped head-unit-server can both resurface
   after a long gap (USB re-auth prompts, the phone reconnecting) — re-check both before
   assuming something in the app broke.
+- `adb` isn't necessarily on `PATH` in whatever shell you're driving this from (it wasn't in
+  either of Claude Code's Bash/PowerShell tool shells on this machine, despite a device
+  being attached and authorized) — a bare `adb devices` failing with "command not found" is
+  not evidence no device is connected. Fall back to the full path via `local.properties`'s
+  `sdk.dir` + `/platform-tools/adb.exe` before concluding there's nothing to test against.
+  See `CLAUDE.md`'s Commands section.
+- `adb shell dumpsys media_session` is a useful non-visual substitute for a chunk of what
+  the DHU would otherwise be needed for: the dump includes each app's real
+  `PlaybackState` — custom actions (name + icon resource id), `queueTitle`/timeline size,
+  play state/position/speed — straight from the live on-device session, without needing DHU
+  running or a display to look at. It caught the step-4 custom actions (`Skip back 30
+  seconds`/`Skip forward 2 minutes`/`1x speed`) registering correctly and re-confirmed
+  step 3.5's full-timeline behavior (`queueTitle=null, size=92`) in the same pass. It can't
+  confirm Auto's own UI actually renders/slots those actions correctly, though — that part
+  still needs an actual DHU visual check.
+- **An agent with no human at the wheel can still drive a real DHU visual check** — no need
+  to hand this off to a person. Screen-grab the DHU window itself (in PowerShell:
+  `Get-Process` for `desktop-head-unit` to get its `MainWindowHandle`, `GetWindowRect` +
+  `CopyFromScreen` to capture it to a PNG, then read the PNG back as an image) rather than
+  trying to screenshot the phone via `adb exec-out screencap` — DHU is its own desktop
+  window on the host machine, not something rendered on the device. To interact with it,
+  inject real clicks at the window's screen coordinates: plain `user32.dll` `mouse_event`
+  calls were silently swallowed (clicks landed on-screen but nothing in the app reacted, and
+  `dumpsys` confirmed no command fired), but `SendInput` worked reliably. This is exactly
+  how step 4's three custom actions got confirmed end-to-end (tap in the real DHU window →
+  `dumpsys` before/after showing the position/label actually changed) without a person
+  needing to look at anything.
 
-Still pending: a full pass once steps 4–6 land (custom actions, artwork, resumption
+Still pending: a full pass once steps 5–6 land (artwork, resumption
 edge cases), plus actually exercising the `MediaLibraryService` browse tree through some
 client that isn't this particular Auto version (since normal taps never reach it here).
 

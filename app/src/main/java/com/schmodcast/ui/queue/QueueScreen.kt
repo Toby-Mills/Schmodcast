@@ -77,6 +77,8 @@ import coil3.compose.AsyncImage
 import com.schmodcast.R
 import com.schmodcast.data.download.DownloadState
 import com.schmodcast.data.model.Episode
+import com.schmodcast.playback.formatSpeedLabel
+import com.schmodcast.playback.nextSpeed
 import com.schmodcast.ui.theme.SchmodcastNavy
 import com.schmodcast.ui.theme.SchmodcastTeal
 import kotlinx.coroutines.launch
@@ -84,7 +86,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 private val DATE_FORMAT = DateTimeFormatter.ofPattern("MMM d")
-private val SPEED_OPTIONS = listOf(1f, 1.2f, 1.4f, 1.6f, 1.8f, 2f)
 
 // A flick whose velocity alone would cross the full collapsed-to-expanded range in well under a
 // second commits to that direction outright, instead of requiring the drag to actually cross the
@@ -504,7 +505,7 @@ private fun SpeedCycleButton(speed: Float, onClick: () -> Unit) {
             .padding(horizontal = 20.dp, vertical = 10.dp),
     ) {
         Text(
-            text = "${formatSpeed(speed)} speed",
+            text = "${formatSpeedLabel(speed)} speed",
             style = MaterialTheme.typography.labelLarge,
             color = SchmodcastTeal,
         )
@@ -669,14 +670,6 @@ private fun Modifier.expandTouchTarget(horizontal: Dp, vertical: Dp): Modifier =
     layout(constraints.maxWidth, constraints.maxHeight) {
         placeable.place(-extraWidthPx / 2, -extraHeightPx / 2)
     }
-}
-
-private fun formatSpeed(speed: Float): String =
-    String.format(java.util.Locale.US, "%.1fx", speed).replace(".0x", "x")
-
-private fun nextSpeed(current: Float): Float {
-    val index = SPEED_OPTIONS.indexOf(current).coerceAtLeast(0)
-    return SPEED_OPTIONS[(index + 1) % SPEED_OPTIONS.size]
 }
 
 @Composable

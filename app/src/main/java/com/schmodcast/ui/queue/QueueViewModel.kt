@@ -17,6 +17,8 @@ import com.schmodcast.data.model.Episode
 import com.schmodcast.episodeDownloadManager
 import com.schmodcast.episodeRepository
 import com.schmodcast.playback.PlaybackService
+import com.schmodcast.playback.SKIP_BACK_MS
+import com.schmodcast.playback.SKIP_FORWARD_MS
 import com.schmodcast.subscriptionsRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -38,9 +40,6 @@ data class PlaybackUiState(
     val durationMs: Long = 0L,
     val playbackSpeed: Float = 1f,
 )
-
-private const val SKIP_FORWARD_MS = 2 * 60 * 1000L
-private const val SKIP_BACK_MS = 30 * 1000L
 
 class QueueViewModel(application: Application) : AndroidViewModel(application) {
     private val episodeRepository = application.episodeRepository()
