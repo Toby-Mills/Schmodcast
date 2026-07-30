@@ -73,6 +73,14 @@ class QueueViewModel(application: Application) : AndroidViewModel(application) {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             syncStateFromController()
         }
+
+        // A resumed/seeked position is known immediately (from setMediaItems' startPositionMs),
+        // but duration isn't available until ExoPlayer finishes preparing (STATE_READY) - which,
+        // while paused, nothing else re-syncs for: the position ticker only runs while playing.
+        // Without this, the slider can be stuck showing 0% against a real, non-zero position.
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            syncStateFromController()
+        }
     }
 
     init {
