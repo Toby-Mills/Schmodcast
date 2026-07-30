@@ -9,10 +9,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.schmodcast.data.EpisodeRepository
@@ -31,15 +33,19 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
-// Plays exactly one episode at a time - whatever is currently at the head of the
-// (date-sorted) queue. There's no manual reordering, so "what's next" is entirely
-// derived from the database: finishing an episode marks it played, which drops it
-// out of the queue Flow and lets the new head take over.
-class PlaybackService : MediaSessionService() {
+// Whatever is currently at the head of the (date-sorted) queue plays first, but the
+// player's own timeline always holds the *entire* queue (current episode at index 0,
+// the rest following in date order) rather than just one item - this is what lets
+// Android Auto's built-in Queue screen show real upcoming episodes instead of just the
+// one playing now, the same way it would for a real ExoPlayer playlist. There's still
+// no manual reordering, so "what's next" is entirely derived from the database: ExoPlayer
+// auto-advancing to timeline index 1 is what finishing an episode actually looks like,
+// and that transition is what triggers marking it played (see onMediaItemTransition).
+class PlaybackService : MediaLibraryService() {
     private lateinit var player: ExoPlayer
     private lateinit var episodeRepository: EpisodeRepository
     private lateinit var playbackStateStore: PlaybackStateStore
-    private var mediaSession: MediaSession? = null
+    private var mediaSession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var currentEpisodeId: String? = null
@@ -64,10 +70,61 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         player.addListener(object : Player.Listener {
+            // Only the very last item in the timeline ends this way - finishing any
+            // earlier item instead fires onMediaItemTransition with reason AUTO, since
+            // ExoPlayer moves straight on to whatever's already queued at the next index.
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     val finishedId = currentEpisodeId ?: return
                     serviceScope.launch { episodeRepository.markPlayed(finishedId) }
+                }
+            }
+
+            // Fires when ExoPlayer itself advances to the next timeline item - i.e. an
+            // episode finished with more already queued after it. Excludes other transition
+            // reasons (a full setMediaItems() replace, a seek, etc.) via the `finishedId !=
+            // newId` check, since currentEpisodeId is already updated to the new episode's
+            // id by the time those calls trigger this callback.
+            //
+            // The timeline's next item is only as fresh as the last refreshTail() call, so
+            // it's treated as a suggestion, not authority: the actual head of latestQueue
+            // (the repo's live, date-sorted queue - our one source of truth for "what's
+            // next", same as before this timeline held more than one item) is what decides.
+            // If the two agree, nothing more to do. If the queue changed underneath the
+            // timeline (a fresher episode arrived, an out-of-order pick's "true next" isn't
+            // adjacent to it in the timeline, etc.), loadEpisode() forcibly reloads onto the
+            // correct episode instead of leaving ExoPlayer's already-started guess in place.
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) return
+                val finishedId = currentEpisodeId ?: return
+                val newId = mediaItem?.mediaId ?: return
+                if (finishedId == newId) return
+                serviceScope.launch { episodeRepository.markPlayed(finishedId) }
+                val trueNext = latestQueue.firstOrNull { it.id != finishedId }
+                if (trueNext != null && trueNext.id != newId) {
+                    loadEpisode(trueNext, autoPlay = true)
+                } else {
+                    currentEpisodeId = newId
+                    playbackStateStore.currentEpisodeId = newId
+                    // The tail items built by orderedMediaItems()/refreshTail() carry no
+                    // position info (unlike loadEpisode(), which passes it via setMediaItems'
+                    // startPositionMs) - ExoPlayer just auto-advanced onto this one at position
+                    // 0, so if it was previously partway through, seek to resume it here too.
+                    latestQueue.find { it.id == newId }?.let { episode ->
+                        if (episode.lastPositionMs > 0L) player.seekTo(episode.lastPositionMs)
+                    }
+                    // ExoPlayer's own playhead just advanced past the finished episode, so
+                    // the new current item now sits at whatever index it auto-advanced to
+                    // (1, then 2, then 3...), not index 0. Trim the now-consumed items ahead
+                    // of it so index 0 is "current" again - the invariant refreshTail() (and
+                    // everything else that builds a timeline starting at index 0) relies on.
+                    // Skipping this left a finished episode sitting where refreshTail() still
+                    // expected the *next* one, so its periodic timeline refresh (triggered by
+                    // the position-save ticker) clobbered the actually-playing item instead.
+                    val newIndex = player.currentMediaItemIndex
+                    if (newIndex > 0) {
+                        player.removeMediaItems(0, newIndex)
+                    }
                 }
             }
 
@@ -92,7 +149,7 @@ class PlaybackService : MediaSessionService() {
             }
         })
 
-        mediaSession = MediaSession.Builder(this, player).setCallback(sessionCallback).build()
+        mediaSession = MediaLibrarySession.Builder(this, player, sessionCallback).build()
 
         serviceScope.launch {
             episodeRepository.queue.collect { episodes ->
@@ -108,9 +165,14 @@ class PlaybackService : MediaSessionService() {
                 }
                 val stillPlayingCurrent = currentEpisodeId != null && episodes.any { it.id == currentEpisodeId }
                 when {
-                    stillPlayingCurrent -> Unit // don't interrupt what's already loaded
+                    // Current episode is unchanged - just refresh the upcoming portion of the
+                    // timeline (new episodes fetched, one further down got marked played
+                    // elsewhere, etc.) without touching index 0, so playback isn't interrupted.
+                    stillPlayingCurrent -> refreshTail()
                     currentEpisodeId != null -> {
-                        // the episode we were on finished (and was marked played) - advance
+                        // The episode we were on disappeared from the repo without us seeing an
+                        // AUTO transition first - e.g. the phone UI's manual "mark as played"
+                        // bypasses the player entirely. Advance to the new head ourselves.
                         currentEpisodeId = null
                         episodes.firstOrNull()?.let { loadEpisode(it, autoPlay = true) }
                     }
@@ -143,9 +205,62 @@ class PlaybackService : MediaSessionService() {
     private fun loadEpisode(episode: Episode, autoPlay: Boolean) {
         currentEpisodeId = episode.id
         playbackStateStore.currentEpisodeId = episode.id
-        val metadata = MediaMetadata.Builder()
+        player.setMediaItems(orderedMediaItems(episode), 0, resumePositionMs(episode))
+        player.prepare()
+        if (autoPlay) player.play()
+    }
+
+    // Builds the full player timeline for a given "current" episode: itself at index 0,
+    // then the rest of the queue in its existing date order (out-of-order picks - a tap
+    // from the phone UI or Auto's browse tree - naturally still resume the true queue head
+    // next, rather than whatever happened to be adjacent to the tapped episode).
+    private fun orderedMediaItems(current: Episode): List<MediaItem> {
+        val tail = latestQueue.filterNot { it.id == current.id }.map { playableMediaItem(it) }
+        return listOf(playableMediaItem(current)) + tail
+    }
+
+    private fun resumePositionMs(episode: Episode): Long =
+        if (episode.lastPositionMs > 0L) episode.lastPositionMs else C.TIME_UNSET
+
+    // Refreshes everything after the currently-playing item (index 0) to match the latest
+    // queue contents, without touching index 0 itself - used when the queue Flow emits a
+    // new list but what's actually playing hasn't changed, so this never interrupts playback.
+    private fun refreshTail() {
+        val currentId = currentEpisodeId ?: return
+        val tailItems = latestQueue.filterNot { it.id == currentId }.map { playableMediaItem(it) }
+        player.replaceMediaItems(1, player.mediaItemCount, tailItems)
+    }
+
+    // Shared by loadEpisode()/orderedMediaItems() (service-initiated playback) and the
+    // session callback's onSetMediaItems (Android Auto/browser-initiated playback) so both
+    // paths resolve the same real Uri - local file if downloaded, otherwise the streaming
+    // audioUrl.
+    private fun playableMediaItem(episode: Episode): MediaItem {
+        val localFile = episode.localFilePath?.let { File(it) }?.takeIf { it.exists() }
+        val uri = if (localFile != null) Uri.fromFile(localFile) else episode.audioUrl.toUri()
+        return MediaItem.Builder()
+            .setMediaId(episode.id)
+            .setUri(uri)
+            .setMediaMetadata(episodeMetadata(episode, isPlayable = true))
+            .build()
+    }
+
+    // Browse-tree listing item for Android Auto - metadata only, no resolved Uri, since
+    // the real Uri (local file vs. stream) is only resolved when something actually tries
+    // to play it, via onSetMediaItems -> playableMediaItem().
+    private fun browsableMediaItem(episode: Episode): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(episode.id)
+            .setMediaMetadata(episodeMetadata(episode, isPlayable = true))
+            .build()
+
+    private fun episodeMetadata(episode: Episode, isPlayable: Boolean): MediaMetadata =
+        MediaMetadata.Builder()
             .setTitle(episode.title)
             .setArtist(episode.podcastTitle)
+            .setIsPlayable(isPlayable)
+            .setIsBrowsable(false)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_PODCAST_EPISODE)
             .apply {
                 if (episode.podcastArtworkUrl.isNotBlank()) {
                     setArtworkUri(episode.podcastArtworkUrl.toUri())
@@ -153,28 +268,12 @@ class PlaybackService : MediaSessionService() {
             }
             .build()
 
-        val localFile = episode.localFilePath?.let { File(it) }?.takeIf { it.exists() }
-        val uri = if (localFile != null) Uri.fromFile(localFile) else episode.audioUrl.toUri()
-
-        val mediaItem = MediaItem.Builder()
-            .setMediaId(episode.id)
-            .setUri(uri)
-            .setMediaMetadata(metadata)
-            .build()
-
-        player.setMediaItem(mediaItem)
-        if (episode.lastPositionMs > 0L) {
-            player.seekTo(episode.lastPositionMs)
-        }
-        player.prepare()
-        if (autoPlay) player.play()
-    }
-
     // Lets the queue UI hand-pick an episode to play out of order (tapping an "Up Next" row)
-    // without going through the normal head-of-queue flow. loadEpisode() sets currentEpisodeId,
-    // so once this episode naturally finishes, the queue collector's existing auto-advance
-    // logic takes back over and resumes playing whatever is at the head - no special-casing needed.
-    private val sessionCallback = object : MediaSession.Callback {
+    // without going through the normal head-of-queue flow. loadEpisode() builds the tapped
+    // episode's own ordered timeline (itself at index 0, the true queue head next), so once
+    // it naturally finishes, ExoPlayer's own auto-advance (see onMediaItemTransition) resumes
+    // playing whatever is at the head - no special-casing needed.
+    private val sessionCallback = object : MediaLibrarySession.Callback {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             val connectionResult = super.onConnect(session, controller)
             val sessionCommands = connectionResult.availableSessionCommands.buildUpon()
@@ -199,9 +298,100 @@ class PlaybackService : MediaSessionService() {
             }
             return super.onCustomCommand(session, controller, customCommand, args)
         }
+
+        // Android Auto (and any other MediaBrowser client) discovers content through this
+        // browse tree rather than the phone app's "Up Next" list. Auto treats a root's direct
+        // children as browsable tabs, not playable leaves - a root whose children are playable
+        // items directly gets collapsed/skipped straight to Now Playing instead of showing a
+        // browse screen. So the invisible root has exactly one browsable child, "Queue", and the
+        // episodes (the phone UI's single flat, auto-sorted list, no manual folders/reordering)
+        // live one level deeper under that.
+        override fun onGetLibraryRoot(
+            session: MediaLibraryService.MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: MediaLibraryService.LibraryParams?,
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            val rootItem = MediaItem.Builder()
+                .setMediaId(ROOT_ID)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setIsBrowsable(true)
+                        .setIsPlayable(false)
+                        .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
+                        .build(),
+                )
+                .build()
+            return Futures.immediateFuture(LibraryResult.ofItem(rootItem, params))
+        }
+
+        // The queue is bounded by EpisodeRepository's 60-day window, not a large catalog, so
+        // page/pageSize are ignored rather than implementing real pagination.
+        override fun onGetChildren(
+            session: MediaLibraryService.MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: MediaLibraryService.LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            return when (parentId) {
+                ROOT_ID -> {
+                    val queueFolder = MediaItem.Builder()
+                        .setMediaId(QUEUE_FOLDER_ID)
+                        .setMediaMetadata(
+                            MediaMetadata.Builder()
+                                .setTitle("Queue")
+                                .setIsBrowsable(true)
+                                .setIsPlayable(false)
+                                .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_PODCASTS)
+                                .build(),
+                        )
+                        .build()
+                    Futures.immediateFuture(LibraryResult.ofItemList(listOf(queueFolder), params))
+                }
+                QUEUE_FOLDER_ID -> {
+                    val children = latestQueue.map { browsableMediaItem(it) }
+                    Futures.immediateFuture(LibraryResult.ofItemList(children, params))
+                }
+                else -> Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+            }
+        }
+
+        override fun onGetItem(
+            session: MediaLibraryService.MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String,
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            val episode = latestQueue.find { it.id == mediaId }
+                ?: return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+            return Futures.immediateFuture(LibraryResult.ofItem(browsableMediaItem(episode), null))
+        }
+
+        // Auto calls this when the user taps a browsed episode. The incoming MediaItem only
+        // carries the mediaId (from browsableMediaItem(), no Uri) - resolve it back to a real
+        // episode and hand back the full ordered timeline (same as loadEpisode() would build),
+        // updating the same bookkeeping, so mark-played/auto-advance/position-save all keep
+        // working - and Auto's own Queue screen shows the rest of the queue - regardless of
+        // whether playback started from the phone UI or from Auto's browse tree.
+        override fun onSetMediaItems(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val requestedId = mediaItems.firstOrNull()?.mediaId
+            val episode = latestQueue.find { it.id == requestedId }
+                ?: return super.onSetMediaItems(session, controller, mediaItems, startIndex, startPositionMs)
+            currentEpisodeId = episode.id
+            playbackStateStore.currentEpisodeId = episode.id
+            return Futures.immediateFuture(
+                MediaSession.MediaItemsWithStartPosition(orderedMediaItems(episode), 0, resumePositionMs(episode)),
+            )
+        }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = mediaSession
 
     override fun onDestroy() {
         stopPositionSaveTicker()
@@ -224,6 +414,8 @@ class PlaybackService : MediaSessionService() {
     companion object {
         const val CUSTOM_COMMAND_PLAY_EPISODE = "com.schmodcast.PLAY_EPISODE"
         const val EXTRA_EPISODE_ID = "episodeId"
+        private const val ROOT_ID = "root"
+        private const val QUEUE_FOLDER_ID = "queue_root"
         private const val POSITION_SAVE_INTERVAL_MS = 5_000L
     }
 }

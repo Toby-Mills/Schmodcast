@@ -2,16 +2,19 @@
 
 A native Android podcast player. Subscribe to shows via the iTunes Search API; every
 subscription's recent episodes (last 60 days) merge into one auto-sorted Queue with no
-manual reordering — background playback via Media3/ExoPlayer. Tapping any episode in the
-queue loads it into the player out of turn; once it finishes, playback reverts to whatever
-is at the head of the queue.
+manual reordering — background playback via Media3/ExoPlayer, with Android Auto support.
+Tapping any episode in the queue loads it into the player out of turn; once it finishes,
+playback reverts to whatever is at the head of the queue.
 
 ## Stack
 
 - Kotlin 2.4.10, Jetpack Compose (Material 3), Navigation Compose
 - Room (subscriptions/episodes), Retrofit + kotlinx-serialization (iTunes search), a small
   hand-rolled RSS parser (no XML library dependency), Coil (images)
-- Media3 (ExoPlayer + MediaSessionService) for background/notification-controlled playback
+- Media3 (ExoPlayer + `MediaLibraryService`) for background/notification-controlled playback
+  and Android Auto integration — ExoPlayer's own timeline holds the full queue (not just the
+  current episode) so Auto's built-in Queue screen shows real upcoming episodes, and a
+  two-level browse tree (Queue folder → episodes) is exposed for `MediaBrowser` clients
 - Android Gradle Plugin 9.1.1 (built-in Kotlin support — no separate `kotlin-android` plugin)
 - Gradle 9.3.1
 - `minSdk` 26, `compileSdk`/`targetSdk` 37
@@ -41,7 +44,13 @@ is at the head of the queue.
 - Playback position persists per episode (`EpisodeEntity.lastPositionMs`), and the
   last-loaded episode ID persists separately (`PlaybackStateStore`, SharedPreferences) —
   on relaunch, `PlaybackService` resumes that episode at its saved position rather than
-  always starting from the queue head.
+  always starting from the queue head; the same resume-seek also applies whenever any
+  episode becomes current, including ExoPlayer auto-advancing onto one mid-timeline.
+- `PlaybackService` must stay `android:exported="true"` in the manifest, with both the
+  Media3 (`androidx.media3.session.MediaLibraryService`) and legacy
+  (`android.media.browse.MediaBrowserService`) actions on its intent-filter — Android Auto
+  binds via the legacy action for app discovery and gets a silent `SecurityException` if
+  the service isn't exported.
 - No automated tests yet.
 
 ## Keeping this current
