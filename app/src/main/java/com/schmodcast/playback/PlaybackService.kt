@@ -212,6 +212,19 @@ class PlaybackService : MediaLibraryService() {
         mediaSession = MediaLibrarySession.Builder(this, player, sessionCallback)
             .setSessionActivity(sessionActivity)
             .build()
+        // Normally addSession() happens implicitly, the first time some client binds via
+        // onGetSession() (the app's own MediaController, Android Auto, a hardware media-button
+        // event). Media3's internal notification manager only decides a session is "user engaged"
+        // - and therefore only calls the mandatory Service.startForeground() - for sessions it
+        // knows about via addSession(). The widget's transport buttons reach this service purely
+        // via a plain onStartCommand (see below), with no bind ever happening, so without this
+        // explicit call Media3 never learns the session exists: audio would still play (ExoPlayer
+        // doesn't care), but the required startForeground() call never comes, and Android kills
+        // the process ~30s later for violating the startForegroundService() contract (confirmed
+        // via logcat: ForegroundServiceDidNotStartInTimeException). Calling this unconditionally
+        // up front is harmless for the normal already-bound-client case too - addSession() is a
+        // no-op if the session's already registered.
+        addSession(mediaSession!!)
 
         serviceScope.launch {
             episodeRepository.queue.collect { episodes ->
