@@ -2,6 +2,8 @@ package com.schmodcast.playback
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import androidx.core.net.toUri
@@ -27,9 +29,12 @@ import com.schmodcast.R
 import com.schmodcast.data.EpisodeRepository
 import com.schmodcast.data.PlaybackStateStore
 import com.schmodcast.data.model.Episode
+import com.schmodcast.data.remote.NetworkModule
 import com.schmodcast.episodeRepository
 import com.schmodcast.playbackStateStore
+import com.schmodcast.widget.NowPlayingWidgetProvider
 import java.io.File
+import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,6 +44,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import okhttp3.Request
 
 // Whatever is currently at the head of the (date-sorted) queue plays first, but the
 // player's own timeline always holds the *entire* queue (current episode at index 0,
@@ -59,6 +66,17 @@ class PlaybackService : MediaLibraryService() {
     private var latestQueue: List<Episode> = emptyList()
     private var positionSaveJob: Job? = null
     private var hasLoadedInitialEpisode = false
+
+    // Set by onStartCommand when the widget's play/pause button is tapped before the initial
+    // episode has loaded (cold start: process was killed, user's first interaction is the
+    // widget) - player.play() has nothing prepared to act on yet at that point, so this defers
+    // the "should autoplay" decision to the initial-load branch below instead.
+    private var pendingAutoPlayOnLoad = false
+
+    // Artwork is per-podcast, not per-episode, so caching by URL (rather than episode id) also
+    // avoids a re-fetch when the queue naturally moves between episodes of the same podcast.
+    private var cachedArtworkUrl: String? = null
+    private var cachedArtworkBitmap: Bitmap? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -146,6 +164,7 @@ class PlaybackService : MediaLibraryService() {
                     if (newIndex > 0) {
                         player.removeMediaItems(0, newIndex)
                     }
+                    updateWidget()
                 }
             }
 
@@ -156,6 +175,7 @@ class PlaybackService : MediaLibraryService() {
                     stopPositionSaveTicker()
                     savePosition()
                 }
+                updateWidget()
             }
 
             // Fires regardless of which surface changed the speed - the phone UI's
@@ -202,7 +222,11 @@ class PlaybackService : MediaLibraryService() {
                     // head) rather than always restarting at the head on a fresh launch.
                     val resumeId = playbackStateStore.currentEpisodeId
                     val toLoad = episodes.firstOrNull { it.id == resumeId } ?: episodes.firstOrNull()
-                    toLoad?.let { loadEpisode(it, autoPlay = false) }
+                    if (toLoad != null) {
+                        loadEpisode(toLoad, autoPlay = pendingAutoPlayOnLoad)
+                    } else {
+                        updateWidget()
+                    }
                     return@collect
                 }
                 val stillPlayingCurrent = currentEpisodeId != null && episodes.any { it.id == currentEpisodeId }
@@ -222,6 +246,97 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
         }
+    }
+
+    // Handles the widget's transport buttons, which target this service directly via
+    // PendingIntent.getService(...) rather than a MediaController (see
+    // NowPlayingWidgetProvider). Anything that isn't one of our own actions - including Media3's
+    // own media-button handling - must still reach super.onStartCommand().
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_PLAY_PAUSE -> {
+                when {
+                    player.isPlaying -> player.pause()
+                    hasLoadedInitialEpisode -> player.play()
+                    // Nothing prepared yet (cold start) - defer to the initial-load branch in
+                    // onCreate's queue collector once an episode is actually ready to play.
+                    else -> pendingAutoPlayOnLoad = true
+                }
+                return START_NOT_STICKY
+            }
+            ACTION_SKIP_BACK -> {
+                skipBack()
+                return START_NOT_STICKY
+            }
+            ACTION_SKIP_FORWARD -> {
+                skipForward()
+                return START_NOT_STICKY
+            }
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    // Mirrors DefaultMediaNotificationProvider's role for the persistent notification - this is
+    // the only place that pushes RemoteViews to NowPlayingWidgetProvider, called from every place
+    // currentEpisodeId or play state already changes (loadEpisode, onIsPlayingChanged, the
+    // onMediaItemTransition branch that settles on a new current episode without going through
+    // loadEpisode). No-ops immediately if no widget is on a home screen.
+    private fun updateWidget() {
+        if (!NowPlayingWidgetProvider.hasWidgets(this)) return
+        val episode = currentEpisodeId?.let { id -> latestQueue.find { it.id == id } }
+        val isPlaying = player.isPlaying
+        val artworkUrl = episode?.podcastArtworkUrl?.takeIf { it.isNotBlank() }
+
+        if (artworkUrl != null && artworkUrl == cachedArtworkUrl && cachedArtworkBitmap != null) {
+            NowPlayingWidgetProvider.pushUpdate(this, episode, isPlaying, cachedArtworkBitmap)
+            return
+        }
+
+        NowPlayingWidgetProvider.pushUpdate(this, episode, isPlaying, artwork = null)
+        if (artworkUrl == null) return
+        serviceScope.launch {
+            val bitmap = fetchArtworkBitmap(artworkUrl)
+            if (bitmap != null) {
+                cachedArtworkUrl = artworkUrl
+                cachedArtworkBitmap = bitmap
+            }
+            // The current episode/play state may have moved on while the fetch was in flight -
+            // push whatever is current now, not the stale snapshot this call started with.
+            if (bitmap != null || cachedArtworkBitmap != null) {
+                val stillCurrentEpisode = currentEpisodeId?.let { id -> latestQueue.find { it.id == id } }
+                NowPlayingWidgetProvider.pushUpdate(this@PlaybackService, stillCurrentEpisode, player.isPlaying, cachedArtworkBitmap)
+            }
+        }
+    }
+
+    // Downsampled the same way LogoTiledTrack pre-scales the expanded player's track bitmap -
+    // decoding a podcast artwork PNG/JPEG at full source resolution just to shrink it into a
+    // 64dp widget ImageView would waste memory for no visible benefit.
+    private suspend fun fetchArtworkBitmap(url: String): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            val bytes = NetworkModule.okHttpClient.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                response.body?.bytes()
+            } ?: return@withContext null
+
+            val targetPx = (64 * resources.displayMetrics.density).toInt().coerceAtLeast(1)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, targetPx)
+            }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        } catch (e: IOException) {
+            null
+        }
+    }
+
+    private fun calculateInSampleSize(width: Int, height: Int, targetPx: Int): Int {
+        var sampleSize = 1
+        while (width / (sampleSize * 2) >= targetPx && height / (sampleSize * 2) >= targetPx) {
+            sampleSize *= 2
+        }
+        return sampleSize
     }
 
     private fun startPositionSaveTicker() {
@@ -261,9 +376,11 @@ class PlaybackService : MediaLibraryService() {
     private fun loadEpisode(episode: Episode, autoPlay: Boolean) {
         currentEpisodeId = episode.id
         playbackStateStore.currentEpisodeId = episode.id
+        pendingAutoPlayOnLoad = false
         player.setMediaItems(orderedMediaItems(episode), 0, resumePositionMs(episode))
         player.prepare()
         if (autoPlay) player.play()
+        updateWidget()
     }
 
     // Builds the full player timeline for a given "current" episode: itself at index 0,
@@ -561,6 +678,14 @@ class PlaybackService : MediaLibraryService() {
         const val CUSTOM_COMMAND_SKIP_FORWARD = "com.schmodcast.SKIP_FORWARD"
         const val CUSTOM_COMMAND_CYCLE_SPEED = "com.schmodcast.CYCLE_SPEED"
         const val EXTRA_EPISODE_ID = "episodeId"
+
+        // Widget transport buttons (NowPlayingWidgetProvider) target this service directly via
+        // plain Intent actions rather than a SessionCommand - a widget's RemoteViews PendingIntent
+        // can't hold a MediaController connection the way the phone UI/Auto do, so it has to be a
+        // startService-style action handled in onStartCommand instead.
+        const val ACTION_PLAY_PAUSE = "com.schmodcast.widget.PLAY_PAUSE"
+        const val ACTION_SKIP_BACK = "com.schmodcast.widget.SKIP_BACK"
+        const val ACTION_SKIP_FORWARD = "com.schmodcast.widget.SKIP_FORWARD"
         private const val ROOT_ID = "root"
         private const val QUEUE_FOLDER_ID = "queue_root"
         private const val POSITION_SAVE_INTERVAL_MS = 5_000L

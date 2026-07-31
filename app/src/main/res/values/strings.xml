@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Schmodcast</string>
+    <string name="widget_description">Now playing controls for Schmodcast</string>
 </resources>

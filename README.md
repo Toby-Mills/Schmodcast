@@ -56,6 +56,10 @@ playback reverts to whatever is at the head of the queue.
   any network connection, and on finishing kicks off `EpisodeDownloadWorker`, which only runs
   on WiFi (`NetworkType.UNMETERED`) and pre-downloads the next 3 unplayed, undownloaded
   episodes so they're ready offline.
+- A full-width home-screen widget (`widget/NowPlayingWidgetProvider`, classic
+  `AppWidgetProvider`/`RemoteViews` — no Jetpack Glance dependency) shows artwork, play/pause,
+  and the two skip buttons; `PlaybackService` is the sole source of truth and pushes updates to
+  it the same way it owns the persistent notification.
 - No automated tests yet.
 
 ## Keeping this current
