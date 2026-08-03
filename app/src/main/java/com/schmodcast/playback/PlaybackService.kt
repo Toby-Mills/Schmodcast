@@ -465,24 +465,39 @@ class PlaybackService : MediaLibraryService() {
         // SpeedCycleButton). Rebuilt (not just built once at connect) because the speed button's
         // label needs to reflect whatever speed is current, same as the phone UI's own
         // SpeedCycleButton text.
+        // ICON_SKIP_BACK/_FORWARD (generic, unnumbered) rather than ICON_UNDEFINED: Auto renders
+        // its own canonical icon for SLOT_BACK/SLOT_FORWARD regardless of our drawable either way
+        // (see CLAUDE.md's Android Auto findings), but ICON_UNDEFINED gives it no signal that the
+        // button is a skip action rather than a previous/next-*episode* one, so it defaults to the
+        // previous/next-track chevron. The numbered ICON_SKIP_BACK_30/_FORWARD_30 constants would
+        // be a closer visual match but were deliberately not used - no equivalent 120s (2 minute)
+        // constant exists for skip-forward, and a numbered back + generic forward was rejected as
+        // an inconsistent pairing. setCustomIconResId stays as the fallback for consumers (the
+        // phone notification) that don't recognize the predefined constant at all.
         private fun customLayout(): List<CommandButton> = listOf(
-            CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            CommandButton.Builder(CommandButton.ICON_SKIP_BACK)
                 .setSessionCommand(SessionCommand(CUSTOM_COMMAND_SKIP_BACK, Bundle.EMPTY))
                 .setCustomIconResId(R.drawable.ic_skip_back)
                 .setDisplayName("Skip back 30 seconds")
                 .setSlots(CommandButton.SLOT_BACK)
                 .build(),
-            CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD)
                 .setSessionCommand(SessionCommand(CUSTOM_COMMAND_SKIP_FORWARD, Bundle.EMPTY))
                 .setCustomIconResId(R.drawable.ic_skip_forward)
                 .setDisplayName("Skip forward 2 minutes")
                 .setSlots(CommandButton.SLOT_FORWARD)
                 .build(),
+            // SLOT_FORWARD_SECONDARY defaults to a max of zero buttons per Media3's own
+            // DisplayConstraints (see CommandButton.java) unless a host raises it - Auto's
+            // full-screen Now Playing template evidently doesn't, silently dropping this button
+            // rather than just re-icon-ing it. SLOT_OVERFLOW is the documented fallback (preference
+            // order, not a set): unlimited by default, so the button surfaces there instead of
+            // vanishing on hosts/templates that don't allot room for a forward-secondary slot.
             CommandButton.Builder(CommandButton.ICON_UNDEFINED)
                 .setSessionCommand(SessionCommand(CUSTOM_COMMAND_CYCLE_SPEED, Bundle.EMPTY))
                 .setCustomIconResId(R.drawable.ic_speed)
                 .setDisplayName("${formatSpeedLabel(player.playbackParameters.speed)} speed")
-                .setSlots(CommandButton.SLOT_FORWARD_SECONDARY)
+                .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW)
                 .build(),
         )
 
@@ -499,6 +514,18 @@ class PlaybackService : MediaLibraryService() {
                 .setAvailablePlayerCommands(connectionResult.availablePlayerCommands)
                 .setCustomLayout(customLayout())
                 .build()
+        }
+
+        // ConnectionResult.setCustomLayout() above only seeds *that one connecting controller's*
+        // initial layout - it doesn't touch the session-wide legacy PlaybackStateCompat that Auto's
+        // persistent (non-onConnect-driven) rendering and `dumpsys media_session` actually read.
+        // Without this, the custom actions only ever appeared right after the service's own
+        // construction (whatever fed the legacy stub's initial state) and silently reverted to none
+        // once Auto's real controller connected afterward. MediaSession.Callback's own onConnect
+        // docs point at onPostConnect for exactly this - explicitly (re)push the session-wide layout
+        // once a controller has actually connected, not just reactively after a speed change.
+        override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            session.setCustomLayout(customLayout())
         }
 
         // Hardware transport buttons - a car's steering wheel, a Bluetooth headset, a wired

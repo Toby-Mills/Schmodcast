@@ -19,13 +19,19 @@ one episode at a time.
 happened" under each step, and "Findings" at the end). Steps 6–8 not started/pending. Step 4's
 custom actions are confirmed working end-to-end via a real DHU pass (all three tapped
 through the actual DHU window, verified via `dumpsys media_session` before/after each tap).
-Their icons, however, are a platform-enforced limitation, not a bug: root-caused via direct
-experimentation (see step 4) that Android Auto substitutes its own canonical icon per
-`CommandButton` slot regardless of what drawable the app supplies — accepted as a known,
-unfixable-within-this-API constraint rather than worked around. Step 4.5 (not in the original
-plan) makes hardware transport buttons — steering wheel, Bluetooth, wired remote — skip
-±2min/30s within the episode instead of jumping to a different one, confirmed on a real device
-via `adb shell cmd media_session dispatch`.
+Step 4's icon-rendering conclusion was later found to be partly wrong, and corrected in step 4
+point 6: a real bug (the session-wide custom layout was never re-pushed after the initial
+connect, so it silently reverted to empty once Auto's real controller connected) was
+misdiagnosed as more of the same platform-enforced substitution, since a screenshot taken in
+the brief populated window looked like confirmation. Once actually fixed (`onPostConnect`
+pushing `session.setCustomLayout(...)` on every connect), skip-back/forward and speed all
+render as distinct, real icons. `SLOT_BACK`/`SLOT_FORWARD` specifically are still hardcoded to
+the standard previous/next chevrons regardless of icon — but that's confirmed via source
+tracing to be about `Player.COMMAND_SEEK_TO_PREVIOUS`/`_NEXT` availability (which also gates
+hardware-button dispatch, so can't be removed without breaking step 4.5), not a slot-icon
+substitution at all. Step 4.5 (not in the original plan) makes hardware transport buttons —
+steering wheel, Bluetooth, wired remote — skip ±2min/30s within the episode instead of jumping
+to a different one, confirmed on a real device via `adb shell cmd media_session dispatch`.
 
 ## Steps
 
@@ -203,6 +209,56 @@ that was deliberately left as-is rather than worked around.
      bypassing Media3's session/slot abstraction for this one row of buttons — a real architecture
      option, deliberately not pursued for now; revisit if a genuinely custom/numeral-bearing Auto
      icon becomes a priority.
+  6. **Revisited in a later session, after the app owner noticed the speed button missing
+     entirely in Auto's full-screen Now Playing template.** Decompiling
+     `media3-session-1.10.1`'s actual sources (not just symptom-watching) found two distinct,
+     previously-conflated issues:
+     - `CommandButton.DisplayConstraints` defaults `SLOT_FORWARD_SECONDARY` (where the speed
+       button lives) to a max of **zero** buttons — a host template that doesn't explicitly
+       raise that limit drops the button entirely rather than re-icon-ing it. Fixed by declaring
+       `.setSlots(SLOT_FORWARD_SECONDARY, SLOT_OVERFLOW)` — a *preference order*, not a set — so
+       the button falls back to `SLOT_OVERFLOW` (unlimited by default) instead of vanishing.
+     - The real reason all three custom actions rendered as generic/missing rather than this
+       app's own art, re-examined: `ConnectionResult.setCustomLayout(...)` in `onConnect` only
+       seeds *that one connecting controller's* initial layout, not the session-wide legacy
+       `PlaybackStateCompat` that Auto's persistent rendering and `dumpsys media_session` read.
+       Without an explicit session-wide push, `dumpsys` showed `custom actions=[]` — completely
+       empty — once Auto's real controller had connected, even though a `dumpsys` check taken
+       *immediately* after installing a fresh build showed all three actions populated with real
+       icon resource IDs. That immediately-after-install snapshot was mistakenly reported as
+       confirmation the fix worked; it wasn't re-checked after a real settle period, and the app
+       owner caught the regression live in DHU minutes later when it had already reverted to
+       empty. Root cause found by decompiling `MediaSessionLegacyStub`/`CommandButton` directly:
+       fixed by adding `sessionCallback.onPostConnect` (the hook `MediaSession.Callback.onConnect`
+       itself documents for exactly this) to call `session.setCustomLayout(customLayout())` on
+       every connect, not just reactively after a speed change. Verified this time by checking
+       `dumpsys` after a 20s+ settle, past when Auto's controller has fully connected, not just
+       immediately after install. Also switched skip-back/forward from `ICON_UNDEFINED` to the
+       generic (unnumbered) predefined `ICON_SKIP_BACK`/`ICON_SKIP_FORWARD` constants, on the
+       theory that Auto might use the icon *type* to distinguish a skip action from a
+       previous/next-episode one — confirmed via `dumpsys`: these now appear as genuine
+       additional custom actions (distinct generic arrow icons) alongside the still-unfixable
+       `SLOT_BACK`/`SLOT_FORWARD` chevrons, rather than being folded into the chevrons as before.
+     - This means the original point 4 conclusion above — "every slot other than `SLOT_BACK`/
+       `SLOT_FORWARD` always shows the same generic glyph, never the app's own resource" — was at
+       least partly a symptom of this same bug (the action was never actually reaching Auto with
+       a populated icon at all under steady-state connection), not purely a platform-enforced
+       icon substitution. After the fix, three visibly distinct icons render in Auto's full-screen
+       Now Playing where before there was one generic glyph or nothing.
+     - The app owner separately asked whether the still-standard `SLOT_BACK`/`SLOT_FORWARD`
+       chevrons could be removed now that the real skip icons render alongside them (confusing to
+       have two pairs of controls doing the same thing). Traced via source: those chevrons come
+       from the legacy `ACTION_SKIP_TO_PREVIOUS`/`_NEXT` bits, set purely by whether
+       `Player.COMMAND_SEEK_TO_PREVIOUS`/`_NEXT` are in the session's negotiated available player
+       commands (`MediaSessionLegacyStub.createPlaybackStateCompat`) — entirely independent of
+       any `CommandButton` or icon. That is the *exact same* availability flag
+       `ConnectedControllersManager.isPlayerCommandAvailable` checks before a hardware
+       media-button press is allowed to reach `onPlayerCommandRequest` at all
+       (`MediaSessionLegacyStub.dispatchSessionTaskWithPlayerCommand` returns early otherwise) —
+       so removing those commands to kill the chevrons would silently break step 4.5's
+       hardware-button redirect too. Raised with the app owner rather than resolved unilaterally;
+       decision was to keep the chevrons and accept the visual redundancy over losing
+       hardware-button skip.
 
 ### 4.5. Make hardware transport buttons (steering wheel, Bluetooth, wired remote) skip within the episode — done (not in the original plan)
 
