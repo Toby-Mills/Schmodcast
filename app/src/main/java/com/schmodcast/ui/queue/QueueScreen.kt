@@ -337,6 +337,20 @@ private fun CollapsedPlayerBody(
     }
 }
 
+// Height this body's fixed-dp chrome (artwork, spacers, transport buttons) was designed against,
+// at the platform's default 1x font scale. `expandedHeight` in NowPlayingCard is a fixed 80% of
+// screen height regardless of font size, so a large system font scale (which only grows the Text
+// composables here, not the artwork/buttons/spacers) can make the two title lines alone tall
+// enough that the fixed-size chrome no longer fits — on a real device (Pixel, 420dpi, 1.15x font
+// scale) this silently clipped the download/speed/mark-played row entirely, with only a sliver of
+// the speed pill's rounded top edge peeking out under the Card's clip. `chromeScale` below shrinks
+// just that non-text chrome to make room, in proportion to both how much shorter than this
+// reference the available height is *and* how much the font scale has grown the text beyond 1x —
+// text itself is left alone (shrinking it would fight the user's own accessibility setting), and
+// the existing verticalScroll stays as a fallback for whatever this heuristic doesn't fully cover.
+private val EXPANDED_CONTENT_REFERENCE_HEIGHT = 620.dp
+private const val EXPANDED_CHROME_MIN_SCALE = 0.7f
+
 @Composable
 private fun ExpandedPlayerBody(
     episode: Episode,
@@ -353,100 +367,119 @@ private fun ExpandedPlayerBody(
     onSpeedChange: (Float) -> Unit,
     onDownloadClick: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        AsyncImage(
-            model = episode.podcastArtworkUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val fontScale = LocalDensity.current.fontScale
+        val heightRatio = (maxHeight / EXPANDED_CONTENT_REFERENCE_HEIGHT).coerceAtMost(1f)
+        val fontScalePenalty = (1f / fontScale).coerceAtMost(1f)
+        val chromeScale = (heightRatio * fontScalePenalty).coerceIn(EXPANDED_CHROME_MIN_SCALE, 1f)
+
+        Column(
             modifier = Modifier
-                .size(180.dp)
-                .clip(RoundedCornerShape(20.dp)),
-        )
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        Text(
-            text = episode.title,
-            style = MaterialTheme.typography.titleLarge,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = episode.podcastTitle,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        PlaybackProgressSlider(positionMs = positionMs, durationMs = durationMs, onSeek = onSeek)
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 16.dp * chromeScale),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            TransportButton(
-                painter = painterResource(R.drawable.ic_skip_back),
-                label = "30",
-                contentDescription = "Skip back 30 seconds",
-                diameter = 64.dp,
-                iconSize = 26.dp,
-                containerColor = SchmodcastTeal.copy(alpha = 0.16f),
-                contentColor = SchmodcastNavy,
-                onClick = onSkipBack,
+            AsyncImage(
+                model = episode.podcastArtworkUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(180.dp * chromeScale)
+                    .clip(RoundedCornerShape(20.dp)),
             )
-            PlayPauseButton(isPlaying = isPlaying, onClick = onPlayPauseClick)
-            TransportButton(
-                painter = painterResource(R.drawable.ic_skip_forward),
-                label = "2m",
-                contentDescription = "Skip forward 2 minutes",
-                diameter = 64.dp,
-                iconSize = 26.dp,
-                containerColor = SchmodcastTeal.copy(alpha = 0.16f),
-                contentColor = SchmodcastNavy,
-                onClick = onSkipForward,
+
+            Spacer(modifier = Modifier.height(20.dp * chromeScale))
+
+            Text(
+                text = episode.title,
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(),
             )
-        }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = episode.podcastTitle,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
 
-        Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(16.dp * chromeScale))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            DownloadIndicator(state = downloadState, onClick = onDownloadClick, iconSize = 28.dp)
-            SpeedCycleButton(speed = playbackSpeed, onClick = { onSpeedChange(nextSpeed(playbackSpeed)) })
-            IconButton(onClick = onMarkPlayed) {
-                Icon(
-                    imageVector = Icons.Filled.CheckCircle,
-                    contentDescription = "Mark as played",
-                    modifier = Modifier.size(28.dp),
+            PlaybackProgressSlider(positionMs = positionMs, durationMs = durationMs, onSeek = onSeek)
+
+            Spacer(modifier = Modifier.height(8.dp * chromeScale))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TransportButton(
+                    painter = painterResource(R.drawable.ic_skip_back),
+                    label = "30",
+                    contentDescription = "Skip back 30 seconds",
+                    diameter = 64.dp * chromeScale,
+                    iconSize = 26.dp * chromeScale,
+                    containerColor = SchmodcastTeal.copy(alpha = 0.16f),
+                    contentColor = SchmodcastNavy,
+                    onClick = onSkipBack,
                 )
+                PlayPauseButton(
+                    isPlaying = isPlaying,
+                    onClick = onPlayPauseClick,
+                    diameter = 112.dp * chromeScale,
+                    pauseIconSize = 48.dp * chromeScale,
+                    playIconSize = 56.dp * chromeScale,
+                )
+                TransportButton(
+                    painter = painterResource(R.drawable.ic_skip_forward),
+                    label = "2m",
+                    contentDescription = "Skip forward 2 minutes",
+                    diameter = 64.dp * chromeScale,
+                    iconSize = 26.dp * chromeScale,
+                    containerColor = SchmodcastTeal.copy(alpha = 0.16f),
+                    contentColor = SchmodcastNavy,
+                    onClick = onSkipForward,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp * chromeScale))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DownloadIndicator(state = downloadState, onClick = onDownloadClick, iconSize = 28.dp * chromeScale)
+                SpeedCycleButton(speed = playbackSpeed, onClick = { onSpeedChange(nextSpeed(playbackSpeed)) })
+                IconButton(onClick = onMarkPlayed) {
+                    Icon(
+                        imageVector = Icons.Filled.CheckCircle,
+                        contentDescription = "Mark as played",
+                        modifier = Modifier.size(28.dp * chromeScale),
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun PlayPauseButton(isPlaying: Boolean, onClick: () -> Unit) {
+private fun PlayPauseButton(
+    isPlaying: Boolean,
+    onClick: () -> Unit,
+    diameter: Dp = 112.dp,
+    pauseIconSize: Dp = 48.dp,
+    playIconSize: Dp = 56.dp,
+) {
     Box(
         modifier = Modifier
-            .size(112.dp)
+            .size(diameter)
             .clip(CircleShape)
             .background(SchmodcastNavy)
             .clickable(onClick = onClick),
@@ -457,14 +490,14 @@ private fun PlayPauseButton(isPlaying: Boolean, onClick: () -> Unit) {
                 painter = painterResource(R.drawable.ic_pause),
                 contentDescription = "Pause",
                 tint = Color.White,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(pauseIconSize),
             )
         } else {
             Icon(
                 imageVector = Icons.Filled.PlayArrow,
                 contentDescription = "Play",
                 tint = Color.White,
-                modifier = Modifier.size(56.dp),
+                modifier = Modifier.size(playIconSize),
             )
         }
     }
