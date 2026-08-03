@@ -19,6 +19,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 private const val TAG = "EpisodeDownloadManager"
+private const val MAX_DOWNLOADED_EPISODES = 20
 
 sealed interface DownloadState {
     data object NotDownloaded : DownloadState
@@ -76,6 +77,7 @@ class EpisodeDownloadManager(
                 episodeDao.setLocalFilePath(episode.id, destFile.absolutePath)
             }.onSuccess {
                 _states.update { it + (episode.id to DownloadState.Downloaded) }
+                enforceDownloadLimit()
             }.onFailure { e ->
                 destFile.delete()
                 Log.w(TAG, "Download failed for '${episode.title}'", e)
@@ -92,6 +94,20 @@ class EpisodeDownloadManager(
             episode.localFilePath?.let { File(it).delete() }
             episodeDao.setLocalFilePath(episode.id, null)
             _states.update { it - episode.id }
+        }
+    }
+
+    // Caps storage use regardless of played status - a downloaded-but-unplayed backlog
+    // shouldn't grow unbounded just because nothing has consumed it yet. Oldest-published
+    // downloads are evicted first, on the same "queue is date-sorted" logic as everywhere else.
+    private suspend fun enforceDownloadLimit() {
+        val downloaded = episodeDao.getDownloaded()
+        val excess = downloaded.size - MAX_DOWNLOADED_EPISODES
+        if (excess <= 0) return
+        downloaded.take(excess).forEach { entity ->
+            entity.localFilePath?.let { File(it).delete() }
+            episodeDao.setLocalFilePath(entity.id, null)
+            _states.update { it + (entity.id to DownloadState.NotDownloaded) }
         }
     }
 }

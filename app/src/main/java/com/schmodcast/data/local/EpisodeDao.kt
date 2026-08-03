@@ -38,6 +38,9 @@ interface EpisodeDao {
     @Query("SELECT * FROM episodes WHERE played = 0 AND localFilePath IS NULL ORDER BY publishedAtEpochMillis DESC LIMIT :limit")
     suspend fun getUndownloaded(limit: Int): List<EpisodeEntity>
 
+    @Query("SELECT * FROM episodes WHERE localFilePath IS NOT NULL ORDER BY publishedAtEpochMillis ASC")
+    suspend fun getDownloaded(): List<EpisodeEntity>
+
     @Query("DELETE FROM episodes WHERE publishedAtEpochMillis < :cutoffEpochMillis")
     suspend fun deleteOlderThan(cutoffEpochMillis: Long)
 }
